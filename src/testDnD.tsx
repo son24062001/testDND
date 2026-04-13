@@ -9,9 +9,15 @@ import {
   closestCenter,
   useDroppable,
   useDraggable,
+  
 } from "@dnd-kit/core";
-import { useSortable } from "@dnd-kit/sortable";
-import type { DragOverEvent } from "@dnd-kit/core";
+import {
+  useSortable,
+  SortableContext,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable"
+import type { DragOverEvent, DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,12 +54,9 @@ interface SidebarGroup {
   items: SidebarItemData[];
 }
 
-interface ActiveItem {
-  fromSidebar?: boolean;
-  type?: FieldType;
-  label?: string;
-  id?: string;
-}
+type ActiveItemKind =
+  | { kind: "sidebar"; type: FieldType; label: string }
+  | { kind: "row"; rowId: string };
 
 type GridSlot = "full" | "left" | "right";
 
@@ -164,36 +167,37 @@ function Icon({ d, size = 14 }: { d: string; size?: number }) {
   );
 }
 
+// Icon 6 chấm 2×3 — dùng cho grip handle từng ô
+function GripDots({ size = 14, color = "currentColor" }: { size?: number; color?: string }) {
+  const r = size * 0.115;
+  const x1 = size * 0.32, x2 = size * 0.68;
+  const y1 = size * 0.18, y2 = size * 0.5, y3 = size * 0.82;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} fill={color}>
+      <circle cx={x1} cy={y1} r={r} /><circle cx={x2} cy={y1} r={r} />
+      <circle cx={x1} cy={y2} r={r} /><circle cx={x2} cy={y2} r={r} />
+      <circle cx={x1} cy={y3} r={r} /><circle cx={x2} cy={y3} r={r} />
+    </svg>
+  );
+}
+
 // ─── FieldRenderer ────────────────────────────────────────────────────────────
 const inputStyle: React.CSSProperties = {
-  width: "90%",
-  background: "#1a1f2e",
-  border: "1px solid #2a3040",
-  color: "#c9d1e0",
-  borderRadius: 4,
-  padding: "6px 10px",
-  fontSize: 13,
-  outline: "none",
+  width: "100%", background: "#1a1f2e", border: "1px solid #2a3040",
+  color: "#c9d1e0", borderRadius: 4, padding: "6px 10px", fontSize: 13,
+  outline: "none", boxSizing: "border-box",
 };
 
 function renderField(type: FieldType, props: FieldProps): JSX.Element {
   switch (type) {
-    case "text":
-    case "email":
-    case "password":
-    case "number":
-    case "decimal":
+    case "text": case "email": case "password": case "number": case "decimal":
       return <input type={type === "decimal" ? "number" : type} placeholder={props.placeholder} style={inputStyle} />;
-
     case "date":
       return <input type="date" style={inputStyle} />;
-
     case "multiline":
       return <textarea rows={props.rows || 3} placeholder={props.placeholder} style={{ ...inputStyle, resize: "vertical" }} />;
-
     case "richtext":
-      return <div style={{ ...inputStyle, minHeight: 80, display: "flex", alignItems: "center", gap: 8 }} />;
-
+      return <div style={{ ...inputStyle, minHeight: 80 }} />;
     case "radio":
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -204,20 +208,17 @@ function renderField(type: FieldType, props: FieldProps): JSX.Element {
           ))}
         </div>
       );
-
     case "switch":
       return (
         <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
           <div style={{ width: 36, height: 20, background: "#3b9eff", borderRadius: 10, position: "relative" }}>
-            <div style={{ width: 16, height: 16, background: "#fff", borderRadius: "50%", position: "absolute", top: 2, left: 18, transition: "left 0.2s" }} />
+            <div style={{ width: 16, height: 16, background: "#fff", borderRadius: "50%", position: "absolute", top: 2, left: 18 }} />
           </div>
           <span style={{ color: "#c9d1e0", fontSize: 13 }}>Enabled</span>
         </label>
       );
-
     case "slider":
       return <input type="range" min={props.min ?? 0} max={props.max ?? 100} style={{ width: "100%", accentColor: "#3b9eff" }} />;
-
     case "checkbox":
       return (
         <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -225,7 +226,6 @@ function renderField(type: FieldType, props: FieldProps): JSX.Element {
           <span style={{ color: "#c9d1e0", fontSize: 13 }}>{props.label}</span>
         </label>
       );
-
     case "checkboxgroup":
       return (
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -236,30 +236,14 @@ function renderField(type: FieldType, props: FieldProps): JSX.Element {
           ))}
         </div>
       );
-
     case "select":
-      return (
-        <select style={inputStyle}>
-          {(props.options || []).map((o, i) => <option key={i}>{o}</option>)}
-        </select>
-      );
-
+      return <select style={inputStyle}>{(props.options || []).map((o, i) => <option key={i}>{o}</option>)}</select>;
     case "attachment":
-      return (
-        <div style={{ ...inputStyle, border: "1px dashed #2a3040", color: "#6b7a99", padding: "12px 10px", textAlign: "center" }}>
-          📎 Click or drag to attach files
-        </div>
-      );
-
+      return <div style={{ ...inputStyle, border: "1px dashed #2a3040", color: "#6b7a99", padding: "12px 10px", textAlign: "center" }}>📎 Click or drag to attach files</div>;
     case "textlist":
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <input placeholder="Add item..." style={inputStyle} />
-        </div>
-      );
-
+      return <input placeholder="Add item..." style={inputStyle} />;
     default:
-      return <input style={{ ...inputStyle, width: "100%" }} />;
+      return <input style={inputStyle} />;
   }
 }
 
@@ -267,30 +251,13 @@ function renderField(type: FieldType, props: FieldProps): JSX.Element {
 function SidebarItem({ item }: { item: SidebarItemData }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `sidebar-${item.type}`,
-    data: { fromSidebar: true, type: item.type, label: item.label },
+    data: { kind: "sidebar", type: item.type, label: item.label },
   });
-
   return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      style={{
-        display: "flex", alignItems: "center", gap: 8, padding: "7px 10px",
-        borderRadius: 5, cursor: "grab",
-        color: isDragging ? "#3b9eff" : "#9ba8bf",
-        background: isDragging ? "#1e2535" : "transparent",
-        fontSize: 13, userSelect: "none", transition: "all 0.15s",
-        opacity: isDragging ? 0.5 : 1,
-      }}
-      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
-        e.currentTarget.style.background = "#1a2233";
-        e.currentTarget.style.color = "#c9d1e0";
-      }}
-      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => {
-        e.currentTarget.style.background = isDragging ? "#1e2535" : "transparent";
-        e.currentTarget.style.color = isDragging ? "#3b9eff" : "#9ba8bf";
-      }}
+    <div ref={setNodeRef} {...listeners} {...attributes}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 5, cursor: "grab", color: isDragging ? "#3b9eff" : "#9ba8bf", background: isDragging ? "#1e2535" : "transparent", fontSize: 13, userSelect: "none", transition: "all 0.15s", opacity: isDragging ? 0.5 : 1 }}
+      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.background = "#1a2233"; e.currentTarget.style.color = "#c9d1e0"; }}
+      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.background = isDragging ? "#1e2535" : "transparent"; e.currentTarget.style.color = isDragging ? "#3b9eff" : "#9ba8bf"; }}
     >
       <Icon d={icons[item.icon]} size={14} />
       {item.label}
@@ -300,29 +267,18 @@ function SidebarItem({ item }: { item: SidebarItemData }) {
 
 // ─── ComponentSidebar ─────────────────────────────────────────────────────────
 function ComponentSidebar({ search, onSearchChange }: { search: string; onSearchChange: (v: string) => void }) {
-  const filteredGroups: SidebarGroup[] = SIDEBAR_GROUPS.map((g) => ({
-    ...g,
-    items: g.items.filter((i) => i.label.toLowerCase().includes(search.toLowerCase())),
-  })).filter((g) => g.items.length > 0);
-
+  const filteredGroups = SIDEBAR_GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(search.toLowerCase())) })).filter((g) => g.items.length > 0);
   return (
     <div style={{ width: 200, background: "#0e1525", borderRight: "1px solid #1a2235", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
       <div style={{ padding: "10px 10px 6px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#1a2235", border: "1px solid #1e2d42", borderRadius: 6, padding: "6px 10px" }}>
           <Icon d={icons.search} size={13} />
-          <input
-            value={search}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearchChange(e.target.value)}
-            placeholder="Search"
-            style={{ background: "transparent", border: "none", color: "#c9d1e0", fontSize: 13, outline: "none", width: "100%" }}
-          />
+          <input value={search} onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearchChange(e.target.value)} placeholder="Search" style={{ background: "transparent", border: "none", color: "#c9d1e0", fontSize: 13, outline: "none", width: "100%" }} />
         </div>
       </div>
       {filteredGroups.map((group) => (
         <div key={group.label}>
-          <div style={{ padding: "10px 10px 4px", fontSize: 11, color: "#4a5568", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-            {group.label}
-          </div>
+          <div style={{ padding: "10px 10px 4px", fontSize: 11, color: "#4a5568", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em" }}>{group.label}</div>
           {group.items.map((item) => <SidebarItem key={item.type} item={item} />)}
         </div>
       ))}
@@ -330,16 +286,30 @@ function ComponentSidebar({ search, onSearchChange }: { search: string; onSearch
   );
 }
 
-// ─── FormField ────────────────────────────────────────────────────────────────
-function FormField({ field, isSelected, onClick, onDelete }: {
-  field: Field; isSelected: boolean; onClick: () => void; onDelete: (id: string) => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: field.id });
+// ─── FormField — mỗi ô có grip handle bên trái ────────────────────────────────
+interface FormFieldProps {
+  field: Field;
+  isSelected: boolean;
+  isDraggingFromSidebar: boolean;
+  onClick: () => void;
+  onDelete: (id: string) => void;
+}
+
+function FormField({ field, isSelected, isDraggingFromSidebar, onClick, onDelete }: FormFieldProps) {
+  const {
+    attributes, listeners, setNodeRef,
+    transform, transition, isDragging,
+  } = useSortable({
+    id: `field:${field.id}`,
+    data: { kind: "field", fieldId: field.id },
+    disabled: isDraggingFromSidebar,
+  });
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition: transition ?? undefined,
-    opacity: isDragging ? 0.4 : 1,
+    opacity: isDragging ? 0.3 : 1,
+    position: "relative",
   };
 
   return (
@@ -349,26 +319,79 @@ function FormField({ field, isSelected, onClick, onDelete }: {
           border: isSelected ? "1.5px solid #3b9eff" : "1.5px solid transparent",
           borderRadius: 6,
           background: isSelected ? "rgba(59,158,255,0.04)" : "transparent",
-          padding: "10px 14px", position: "relative", transition: "all 0.15s", marginBottom: 4,
+          padding: "10px 36px 10px 30px", // left padding cho grip, right padding cho trash
+          position: "relative",
+          transition: "border-color 0.15s, background 0.15s",
+          marginBottom: 2,
+          cursor: "default",
         }}
-        onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => { if (!isSelected) e.currentTarget.style.borderColor = "#2a3a55"; }}
-        onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { if (!isSelected) e.currentTarget.style.borderColor = "transparent"; }}
+        onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
+          if (!isSelected) e.currentTarget.style.borderColor = "#2a3a55";
+          // Hiện grip và trash khi hover
+          const grip = e.currentTarget.querySelector<HTMLElement>(".field-grip");
+          const trash = e.currentTarget.querySelector<HTMLElement>(".field-trash");
+          if (grip) grip.style.opacity = "1";
+          if (trash) trash.style.opacity = "1";
+        }}
+        onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => {
+          if (!isSelected) e.currentTarget.style.borderColor = "transparent";
+          if (!isSelected) {
+            const grip = e.currentTarget.querySelector<HTMLElement>(".field-grip");
+            const trash = e.currentTarget.querySelector<HTMLElement>(".field-trash");
+            if (grip) grip.style.opacity = "0";
+            if (trash) trash.style.opacity = "0";
+          }
+        }}
       >
-        <div {...listeners} {...attributes} style={{ position: "absolute", left: -20, top: "50%", transform: "translateY(-50%)", color: "#4a5568", cursor: "grab", padding: "4px 2px", opacity: isSelected ? 1 : 0, transition: "opacity 0.15s" }}>
-          <Icon d={icons.grip} size={13} />
-        </div>
+        {/* ── Grip handle bên trái ── */}
+        {!isDraggingFromSidebar && (
+          <div
+            className="field-grip"
+            {...listeners}
+            {...attributes}
+            title="Kéo để di chuyển"
+            style={{
+              position: "absolute",
+              left: 6,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 20,
+              height: 20,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: isDragging ? "#3b9eff" : "#3a4a60",
+              cursor: isDragging ? "grabbing" : "grab",
+              opacity: isSelected ? 1 : 0,
+              transition: "opacity 0.15s, color 0.15s",
+              zIndex: 2,
+            }}
+            onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.color = "#3b9eff"; }}
+            onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { if (!isDragging) e.currentTarget.style.color = "#3a4a60"; }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripDots size={14} color="currentColor" />
+          </div>
+        )}
+
+        {/* ── Trash button bên phải ── */}
         <button
+          className="field-trash"
           onClick={(e: React.MouseEvent<HTMLButtonElement>) => { e.stopPropagation(); onDelete(field.id); }}
           style={{ position: "absolute", right: 8, top: 8, background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 4, color: "#ef4444", cursor: "pointer", padding: "3px 5px", display: "flex", alignItems: "center", opacity: isSelected ? 1 : 0, transition: "opacity 0.15s" }}
         >
           <Icon d={icons.trash} size={12} />
         </button>
+
+        {/* ── Label ── */}
         {field.type !== "checkbox" && (
           <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ fontSize: 13, fontWeight: 500, color: "#c9d1e0" }}>{field.props.label}</span>
             {field.props.required && <span style={{ color: "#ef4444", fontSize: 12 }}>*</span>}
           </div>
         )}
+
+        {/* ── Field input ── */}
         {renderField(field.type, field.props)}
       </div>
     </div>
@@ -376,56 +399,34 @@ function FormField({ field, isSelected, onClick, onDelete }: {
 }
 
 // ─── PropertiesPanel ──────────────────────────────────────────────────────────
-const propInputStyle: React.CSSProperties = {
-  width: "90%", background: "#1a1f2e", border: "1px solid #2a3040",
-  color: "#c9d1e0", borderRadius: 4, padding: "5px 8px", fontSize: 12, outline: "none",
-};
+const propInputStyle: React.CSSProperties = { width: "90%", background: "#1a1f2e", border: "1px solid #2a3040", color: "#c9d1e0", borderRadius: 4, padding: "5px 8px", fontSize: 12, outline: "none" };
 
 function PropRow({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div>
-      <div style={{ fontSize: 11, color: "#6b7a99", marginBottom: 4, display: "flex", gap: 4, alignItems: "center" }}>
-        {label}{required && <span style={{ color: "#ef4444" }}>*</span>}
-      </div>
+      <div style={{ fontSize: 11, color: "#6b7a99", marginBottom: 4, display: "flex", gap: 4, alignItems: "center" }}>{label}{required && <span style={{ color: "#ef4444" }}>*</span>}</div>
       {children}
     </div>
   );
 }
 
 function PropertiesPanel({ field, onChange }: { field: Field | null; onChange: (props: FieldProps) => void }) {
-  if (!field) {
-    return (
-      <div style={{ padding: "20px 16px", color: "#4a5568", fontSize: 13, textAlign: "center" }}>
-        <div style={{ marginBottom: 8 }}>Select a field to edit</div>
-        <div style={{ fontSize: 11 }}>Properties will appear here</div>
-      </div>
-    );
-  }
-
+  if (!field) return <div style={{ padding: "20px 16px", color: "#4a5568", fontSize: 13, textAlign: "center" }}><div style={{ marginBottom: 8 }}>Select a field to edit</div><div style={{ fontSize: 11 }}>Properties will appear here</div></div>;
   const update = (key: keyof FieldProps, val: FieldProps[keyof FieldProps]) => onChange({ ...field.props, [key]: val });
   const hasPlaceholder = (["text", "number", "decimal", "email", "multiline", "textlist"] as FieldType[]).includes(field.type);
   const hasOptions = (["radio", "checkboxgroup", "select"] as FieldType[]).includes(field.type);
-
   return (
     <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "#3b9eff", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-        {field.type.charAt(0).toUpperCase() + field.type.slice(1)} — General
-      </div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#3b9eff", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>{field.type.charAt(0).toUpperCase() + field.type.slice(1)} — General</div>
       <PropRow label="ID" required><span style={{ color: "#6b7a99", fontSize: 12 }}>{field.id}</span></PropRow>
-      <PropRow label="Label">
-        <input value={field.props.label || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("label", e.target.value)} style={propInputStyle} />
-      </PropRow>
+      <PropRow label="Label"><input value={field.props.label || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("label", e.target.value)} style={propInputStyle} /></PropRow>
       <PropRow label="Required">
         <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
           <input type="checkbox" checked={!!field.props.required} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("required", e.target.checked)} style={{ accentColor: "#3b9eff" }} />
           <span style={{ fontSize: 12, color: "#9ba8bf" }}>{field.props.required ? "Yes" : "No"}</span>
         </label>
       </PropRow>
-      {hasPlaceholder && (
-        <PropRow label="Placeholder">
-          <input value={field.props.placeholder || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("placeholder", e.target.value)} style={propInputStyle} />
-        </PropRow>
-      )}
+      {hasPlaceholder && <PropRow label="Placeholder"><input value={field.props.placeholder || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("placeholder", e.target.value)} style={propInputStyle} /></PropRow>}
       {hasOptions && (
         <PropRow label="Options">
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -441,12 +442,8 @@ function PropertiesPanel({ field, onChange }: { field: Field | null; onChange: (
       )}
       {field.type === "slider" && (
         <>
-          <PropRow label="Min">
-            <input type="number" value={field.props.min ?? 0} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("min", +e.target.value)} style={propInputStyle} />
-          </PropRow>
-          <PropRow label="Max">
-            <input type="number" value={field.props.max ?? 100} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("max", +e.target.value)} style={propInputStyle} />
-          </PropRow>
+          <PropRow label="Min"><input type="number" value={field.props.min ?? 0} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("min", +e.target.value)} style={propInputStyle} /></PropRow>
+          <PropRow label="Max"><input type="number" value={field.props.max ?? 100} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("max", +e.target.value)} style={propInputStyle} /></PropRow>
         </>
       )}
     </div>
@@ -459,25 +456,9 @@ function DroppableCell({ droppableId, isHighlighted, isEmpty, children, width }:
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: droppableId });
   const active = isOver || isHighlighted;
-
   return (
-    <div
-      ref={setNodeRef}
-      style={{
-        flex: width === "full" ? "1 1 100%" : "1 1 50%",
-        minHeight: isEmpty ? 72 : undefined,
-        borderRadius: 6,
-        border: active ? "2px dashed #3b9eff" : isEmpty ? "2px dashed #1e2d42" : "2px solid transparent",
-        background: active ? "rgba(59,158,255,0.07)" : "transparent",
-        transition: "all 0.15s", display: "flex", alignItems: "stretch",
-        position: "relative", overflow: "hidden",
-      }}
-    >
-      {isEmpty && (
-        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: active ? "#3b9eff" : "#2a3a50", fontSize: 11, pointerEvents: "none", transition: "color 0.15s" }}>
-          {active ? "Thả vào đây" : width === "half" ? "½ dòng trống" : ""}
-        </div>
-      )}
+    <div ref={setNodeRef} style={{ flex: width === "full" ? "1 1 100%" : "1 1 50%", minHeight: isEmpty ? 72 : undefined, borderRadius: 6, border: active ? "2px dashed #3b9eff" : isEmpty ? "2px dashed #1e2d42" : "2px solid transparent", background: active ? "rgba(59,158,255,0.07)" : "transparent", transition: "all 0.15s", display: "flex", alignItems: "stretch", position: "relative", overflow: "hidden" }}>
+      {isEmpty && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: active ? "#3b9eff" : "#2a3a50", fontSize: 11, pointerEvents: "none" }}>{active ? "Thả vào đây" : width === "half" ? "½ dòng trống" : ""}</div>}
       <div style={{ flex: 1 }}>{children}</div>
     </div>
   );
@@ -486,7 +467,8 @@ function DroppableCell({ droppableId, isHighlighted, isEmpty, children, width }:
 // ─── GridRow ──────────────────────────────────────────────────────────────────
 function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField }: {
   row: Row; selectedId: string | null; dropTarget: DropTarget | null;
-  isDraggingFromSidebar: boolean; onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
+  isDraggingFromSidebar: boolean;
+  onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
 }) {
   const isFull = row.cells.length === 1 && row.cells[0].slot === "full";
   const leftCell = row.cells.find((c) => c.slot === "left" || c.slot === "full");
@@ -500,68 +482,59 @@ function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectF
   const isTargetRight = dropTarget?.rowId === row.id && dropTarget?.slot === "right";
   const isTargetFull = dropTarget?.rowId === row.id && dropTarget?.slot === "full";
 
+  // SortableContext ids cho các field trong row này
+  const fieldSortableIds = row.cells.map((c) => `field:${c.field.id}`);
+
   return (
     <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "stretch" }}>
-      {isFull ? (
-        <>
-          {isDraggingFromSidebar && (
-            <DroppableCell droppableId={leftDropId} isHighlighted={isTargetLeft} isEmpty width="half" />
-          )}
-          <DroppableCell droppableId={fullDropId} isHighlighted={isTargetFull} isEmpty={false} width={isDraggingFromSidebar ? "half" : "full"}>
-            {leftCell && (
-              <FormField field={leftCell.field} isSelected={selectedId === leftCell.field.id} onClick={() => onSelectField(leftCell.field.id)} onDelete={onDeleteField} />
-            )}
-          </DroppableCell>
-          {isDraggingFromSidebar && (
-            <DroppableCell droppableId={rightDropId} isHighlighted={isTargetRight} isEmpty width="half" />
-          )}
-        </>
+      <SortableContext items={fieldSortableIds} strategy={verticalListSortingStrategy}>
+        {isFull ? (
+          <>
+            {isDraggingFromSidebar && <DroppableCell droppableId={leftDropId} isHighlighted={isTargetLeft} isEmpty width="half" />}
+            <DroppableCell droppableId={fullDropId} isHighlighted={isTargetFull} isEmpty={false} width={isDraggingFromSidebar ? "half" : "full"}>
+              {leftCell && <FormField field={leftCell.field} isSelected={selectedId === leftCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(leftCell.field.id)} onDelete={onDeleteField} />}
+            </DroppableCell>
+            {isDraggingFromSidebar && <DroppableCell droppableId={rightDropId} isHighlighted={isTargetRight} isEmpty width="half" />}
+          </>
+        ) : (
+          <>
+            <DroppableCell droppableId={leftDropId} isHighlighted={isTargetLeft} isEmpty={!leftCell} width="half">
+              {leftCell && <FormField field={leftCell.field} isSelected={selectedId === leftCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(leftCell.field.id)} onDelete={onDeleteField} />}
+            </DroppableCell>
+            <DroppableCell droppableId={rightDropId} isHighlighted={isTargetRight} isEmpty={!rightCell} width="half">
+              {rightCell && <FormField field={rightCell.field} isSelected={selectedId === rightCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(rightCell.field.id)} onDelete={onDeleteField} />}
+            </DroppableCell>
+          </>
+        )}
+      </SortableContext>
+    </div>
+  );
+}
+
+// ─── BottomDropZone ───────────────────────────────────────────────────────────
+function BottomDropZone({ isEmpty, isDraggingFromSidebar }: { isEmpty: boolean; isDraggingFromSidebar: boolean }) {
+  const { isOver, setNodeRef } = useDroppable({ id: "canvas:new:full" });
+  if (!isDraggingFromSidebar && !isEmpty) return null;
+  return (
+    <div ref={setNodeRef} style={{ minHeight: isEmpty ? 280 : 56, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 10, border: `2px dashed ${isOver ? "#3b9eff" : "#1e2d42"}`, background: isOver ? "rgba(59,158,255,0.05)" : "transparent", transition: "all 0.2s", marginTop: isEmpty ? 0 : 4 }}>
+      {isEmpty ? (
+        <div style={{ textAlign: "center", color: isOver ? "#3b9eff" : "#3a4a5e" }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>📋</div>
+          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Thả component vào đây</div>
+          <div style={{ fontSize: 12, color: "#4a5568" }}>Thả vào giữa → cả dòng · Thả vào ô bên cạnh → nửa dòng</div>
+        </div>
       ) : (
-        <>
-          <DroppableCell droppableId={leftDropId} isHighlighted={isTargetLeft} isEmpty={!leftCell} width="half">
-            {leftCell && <FormField field={leftCell.field} isSelected={selectedId === leftCell.field.id} onClick={() => onSelectField(leftCell.field.id)} onDelete={onDeleteField} />}
-          </DroppableCell>
-          <DroppableCell droppableId={rightDropId} isHighlighted={isTargetRight} isEmpty={!rightCell} width="half">
-            {rightCell && <FormField field={rightCell.field} isSelected={selectedId === rightCell.field.id} onClick={() => onSelectField(rightCell.field.id)} onDelete={onDeleteField} />}
-          </DroppableCell>
-        </>
+        <div style={{ fontSize: 12, color: isOver ? "#3b9eff" : "#2a3a50" }}>{isOver ? "Thêm dòng mới" : "+ Thả để thêm dòng mới"}</div>
       )}
     </div>
   );
 }
 
 // ─── FormCanvas ───────────────────────────────────────────────────────────────
-function BottomDropZone({ isEmpty, isDraggingFromSidebar }: { isEmpty: boolean; isDraggingFromSidebar: boolean }) {
-  const { isOver, setNodeRef } = useDroppable({ id: "canvas:new:full" });
-  if (!isDraggingFromSidebar && !isEmpty) return null;
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        minHeight: isEmpty ? 280 : 56, display: "flex", alignItems: "center", justifyContent: "center",
-        borderRadius: 10, border: `2px dashed ${isOver ? "#3b9eff" : "#1e2d42"}`,
-        background: isOver ? "rgba(59,158,255,0.05)" : "transparent", transition: "all 0.2s", marginTop: isEmpty ? 0 : 4,
-      }}
-    >
-      {isEmpty ? (
-        <div style={{ textAlign: "center", color: isOver ? "#3b9eff" : "#3a4a5e", transition: "color 0.2s" }}>
-          <div style={{ fontSize: 28, marginBottom: 8 }}>📋</div>
-          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Thả component vào đây</div>
-          <div style={{ fontSize: 12, color: "#4a5568" }}>Thả vào giữa → cả dòng · Thả vào ô bên cạnh field → nửa dòng</div>
-        </div>
-      ) : (
-        <div style={{ fontSize: 12, color: isOver ? "#3b9eff" : "#2a3a50", transition: "color 0.2s" }}>
-          {isOver ? "Thêm dòng mới" : "+ Thả để thêm dòng mới"}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField }: {
   rows: Row[]; selectedId: string | null; dropTarget: DropTarget | null;
-  isDraggingFromSidebar: boolean; onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
+  isDraggingFromSidebar: boolean;
+  onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
 }) {
   return (
     <div style={{ flex: 1, overflowY: "auto", background: "#0f1320", padding: "24px" }}>
@@ -577,7 +550,7 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
   );
 }
 
-// ─── ID counters ──────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 let fieldCounter = 1;
 let rowCounter = 1;
 function newFieldId() { return `field_${fieldCounter++}`; }
@@ -598,28 +571,42 @@ function parseDropId(id: string): { rowId: string; slot: GridSlot } | null {
   return null;
 }
 
+// Tìm field trong tất cả rows theo fieldId
+function findFieldInRows(rows: Row[], fieldId: string): { rowId: string; slot: GridSlot } | null {
+  for (const row of rows) {
+    const cell = row.cells.find((c) => c.field.id === fieldId);
+    if (cell) return { rowId: row.id, slot: cell.slot };
+  }
+  return null;
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activeItem, setActiveItem] = useState<ActiveItem | null>(null);
+  const [activeItem, setActiveItem] = useState<ActiveItemKind | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [search, setSearch] = useState<string>("");
 
-  const isDraggingFromSidebar = !!activeItem?.fromSidebar;
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const isDraggingFromSidebar = activeItem?.kind === "sidebar";
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const selectedField: Field | null = rows.flatMap((r) => r.cells.map((c) => c.field)).find((f) => f.id === selectedId) ?? null;
 
-  const handleDragStart = (event: { active: { id: string | number; data: { current?: Record<string, unknown> } } }) => {
-    const { active } = event;
-    if (active.data.current?.fromSidebar) {
-      setActiveItem({ fromSidebar: true, type: active.data.current.type as FieldType, label: active.data.current.label as string });
-    } else {
-      setActiveItem({ id: active.id as string });
+  // ── Drag start ───────────────────────────────────────────────────────────────
+  const handleDragStart = (event: DragStartEvent) => {
+    const data = event.active.data.current as Record<string, unknown> | undefined;
+    if (!data) return;
+    if (data.kind === "sidebar") {
+      setActiveItem({ kind: "sidebar", type: data.type as FieldType, label: data.label as string });
+    } else if (data.kind === "field") {
+      setActiveItem({ kind: "row", rowId: data.fieldId as string }); // reuse kind row để track
     }
   };
 
+  // ── Drag over ────────────────────────────────────────────────────────────────
   const handleDragOver = (event: DragOverEvent) => {
+    if (!isDraggingFromSidebar) { setDropTarget(null); return; }
     const overId = event.over?.id as string | undefined;
     if (!overId) { setDropTarget(null); return; }
     const parsed = parseDropId(overId);
@@ -627,29 +614,94 @@ export default function App() {
     else setDropTarget(null);
   };
 
-  const handleDragEnd = (event: { active: { id: string | number; data: { current?: Record<string, unknown> } }; over: { id: string | number } | null }) => {
+  // ── Drag end ─────────────────────────────────────────────────────────────────
+  const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    const data = active.data.current as Record<string, unknown> | undefined;
+
     setActiveItem(null);
     setDropTarget(null);
     if (!over) return;
 
-    const overId = over.id as string;
-    const parsed = parseDropId(overId);
-    if (!parsed) return;
+    // ── Field reorder (kéo grip trên ô) ────────────────────────────────────
+    if (data?.kind === "field") {
+      const activeFieldSortId = active.id as string; // "field:field_X"
+      const overSortId = over.id as string;           // "field:field_Y"
 
-    const { rowId, slot } = parsed;
+      if (activeFieldSortId === overSortId) return;
 
-    if (active.data.current?.fromSidebar) {
-      const type = active.data.current.type as FieldType;
+      const activeFieldId = activeFieldSortId.replace("field:", "");
+      const overFieldId = overSortId.replace("field:", "");
+
+      setRows((prev) => {
+        // Tìm nguồn và đích
+        const srcInfo = findFieldInRows(prev, activeFieldId);
+        const dstInfo = findFieldInRows(prev, overFieldId);
+        if (!srcInfo || !dstInfo) return prev;
+
+        // Nếu cùng row → arrayMove trong row
+        if (srcInfo.rowId === dstInfo.rowId) {
+          return prev.map((row) => {
+            if (row.id !== srcInfo.rowId) return row;
+            const oldIdx = row.cells.findIndex((c) => c.field.id === activeFieldId);
+            const newIdx = row.cells.findIndex((c) => c.field.id === overFieldId);
+            if (oldIdx === -1 || newIdx === -1) return row;
+            const newCells = arrayMove(row.cells, oldIdx, newIdx);
+            // Cập nhật lại slot
+            if (newCells.length === 2) {
+              return { ...row, cells: [{ ...newCells[0], slot: "left" }, { ...newCells[1], slot: "right" }] };
+            }
+            return { ...row, cells: newCells };
+          });
+        }
+
+        // Khác row → hoán đổi vị trí giữa 2 field
+        return prev.map((row) => {
+          if (row.id === srcInfo.rowId) {
+            return {
+              ...row,
+              cells: row.cells.map((c) => {
+                if (c.field.id === activeFieldId) {
+                  const dstRow = prev.find((r) => r.id === dstInfo.rowId);
+                  const dstCell = dstRow?.cells.find((dc) => dc.field.id === overFieldId);
+                  return dstCell ? { ...c, field: dstCell.field } : c;
+                }
+                return c;
+              }),
+            };
+          }
+          if (row.id === dstInfo.rowId) {
+            return {
+              ...row,
+              cells: row.cells.map((c) => {
+                if (c.field.id === overFieldId) {
+                  const srcRow = prev.find((r) => r.id === srcInfo.rowId);
+                  const srcCell = srcRow?.cells.find((sc) => sc.field.id === activeFieldId);
+                  return srcCell ? { ...c, field: srcCell.field } : c;
+                }
+                return c;
+              }),
+            };
+          }
+          return row;
+        });
+      });
+      return;
+    }
+
+    // ── Drop từ sidebar ──────────────────────────────────────────────────────
+    if (data?.kind === "sidebar") {
+      const overId = over.id as string;
+      const parsed = parseDropId(overId);
+      if (!parsed) return;
+      const { rowId, slot } = parsed;
+      const type = data.type as FieldType;
       const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] } };
 
       setRows((prev) => {
-        if (rowId === "new") {
-          return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
-        }
+        if (rowId === "new") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
         const targetRow = prev.find((r) => r.id === rowId);
         if (!targetRow) return prev;
-
         const isFull = targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
 
         if (isFull && (slot === "left" || slot === "right")) {
@@ -659,11 +711,7 @@ export default function App() {
             : [{ field: existingCell.field, slot: "left" }, { field: newField, slot: "right" }];
           return prev.map((r) => r.id === rowId ? { ...r, cells: updatedCells } : r);
         }
-
-        if (isFull && slot === "full") {
-          return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
-        }
-
+        if (isFull && slot === "full") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
         if (!isFull) {
           const occupied = targetRow.cells.map((c) => c.slot);
           if (!occupied.includes(slot as "left" | "right")) {
@@ -671,10 +719,8 @@ export default function App() {
           }
           return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
         }
-
         return prev;
       });
-
       setSelectedId(newField.id);
     }
   };
@@ -685,11 +731,13 @@ export default function App() {
   }, []);
 
   const updateFieldProps = useCallback((props: FieldProps) => {
-    setRows((prev) => prev.map((row) => ({
-      ...row,
-      cells: row.cells.map((cell) => cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell),
-    })));
+    setRows((prev) => prev.map((row) => ({ ...row, cells: row.cells.map((cell) => cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell) })));
   }, [selectedId]);
+
+  // Ghost preview khi drag field
+  const draggingField = activeItem?.kind === "row"
+    ? rows.flatMap((r) => r.cells).find((c) => c.field.id === (activeItem as { kind: "row"; rowId: string }).rowId)?.field
+    : null;
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
@@ -702,10 +750,19 @@ export default function App() {
           </div>
         </div>
       </div>
-      <DragOverlay>
-        {activeItem?.fromSidebar && (
+
+      <DragOverlay dropAnimation={{ duration: 160, easing: "ease" }}>
+        {/* Sidebar drag overlay */}
+        {isDraggingFromSidebar && (
           <div style={{ background: "#1a2e4a", border: "1.5px solid #3b9eff", borderRadius: 6, padding: "7px 12px", color: "#3b9eff", fontSize: 13, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
-            {activeItem.label}
+            {(activeItem as { kind: "sidebar"; label: string }).label}
+          </div>
+        )}
+        {/* Field drag overlay */}
+        {draggingField && (
+          <div style={{ background: "#111827", border: "1.5px solid #3b9eff", borderRadius: 6, padding: "10px 14px", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", pointerEvents: "none", opacity: 0.9, minWidth: 180 }}>
+            <div style={{ fontSize: 11, color: "#6b7a99", marginBottom: 6 }}>{draggingField.props.label}</div>
+            <div style={{ height: 28, background: "#1a1f2e", borderRadius: 4, border: "1px solid #2a3040" }} />
           </div>
         )}
       </DragOverlay>
