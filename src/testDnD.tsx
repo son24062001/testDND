@@ -272,7 +272,7 @@ function SidebarItem({ item }: { item: SidebarItemData }) {
 function ComponentSidebar({ search, onSearchChange }: { search: string; onSearchChange: (v: string) => void }) {
   const filteredGroups = SIDEBAR_GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(search.toLowerCase())) })).filter((g) => g.items.length > 0);
   return (
-    <div style={{ width: 200, background: "#ffffff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
+    <div style={{ width: 150, background: "#ffffff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
       <div style={{ padding: "10px 10px 6px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#e8edf3", border: "1px solid #e2e8f0", borderRadius: 6, padding: "6px 10px" }}>
           <Icon d={icons.search} size={13} />
@@ -653,15 +653,15 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
 
   return (
     <div
-      style={{ flex: 1, overflowY: "auto", background: "#f0f2f5", padding: "24px" }}
+      style={{ flex: 1, overflowY: "auto", background: "#f0f2f5", padding: "15px" }}
       onClick={(e: React.MouseEvent<HTMLDivElement>) => {
         // Bỏ focus khi click vào vùng ngoài card
         if (e.target === e.currentTarget) onDeselect();
       }}
     >
-      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+      <div style={{ margin: "0 auto" }}>
         <div
-          style={{ background: "#fafafa", borderRadius: 10, border: "1px solid #e2e8f0", padding: "24px 28px", minHeight: 500 }}
+          style={{ background: "#fafafa", borderRadius: 10, border: "1px solid #e2e8f0", padding: "15px", minHeight: 500 }}
           onClick={(e: React.MouseEvent<HTMLDivElement>) => {
             // Bỏ focus khi click vào vùng trống trong card (không phải field)
             if (e.target === e.currentTarget) onDeselect();
@@ -778,7 +778,7 @@ function generateSchemaContent(rows: Row[]): string {
     })
     .join(",\n");
 
-  const exportedAt = new Date().toISOString();
+  const exportedAt = new Date().toLocaleString("vi-VN");
   return `import { ISchema } from "@formily/react";
 
 // Schema exported at: ${exportedAt}
@@ -1095,7 +1095,7 @@ export default function App() {
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           <ComponentSidebar search={search} onSearchChange={setSearch} />
           <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} onResizeRow={handleResizeRow} onDeselect={() => setSelectedId(null)} />
-          <div style={{ width: 240, background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflowY: "auto", flexShrink: 0 }}>
+          <div style={{ width: 200, background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflowY: "auto", flexShrink: 0 }}>
             <PropertiesPanel field={selectedField} onChange={updateFieldProps} />
           </div>
         </div>
