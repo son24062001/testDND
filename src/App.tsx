@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+// ─── App.tsx ──────────────────────────────────────────────────────────────────
+import React, { useState, useCallback } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -7,229 +8,54 @@ import {
   PointerSensor,
   closestCenter,
 } from "@dnd-kit/core";
-import type { DragOverEvent } from "@dnd-kit/core";
-
-import { ComponentSidebar } from "./components/ComponentSidebar";
+import type { Row, Field, FieldProps } from "./types";
+import { Header } from "./components/Header";
+import { ComponentSidebar } from "./components/Sidebar";
 import { FormCanvas } from "./components/FormCanvas";
 import { PropertiesPanel } from "./components/PropertiesPanel";
-import { defaultProps } from "./constants";
-import type {
-  Field,
-  FieldType,
-  FieldProps,
-  ActiveItem,
-  Row,
-  RowField,
-  GridSlot,
-  DropTarget,
-} from "./types";
+import { useDragHandlers } from "./useDragHandlers";
+import { removeField } from "./utils";
 
-// ─── ID counters ──────────────────────────────────────────────────────────────
-let fieldCounter = 1;
-let rowCounter = 1;
-
-function newFieldId() { return `field_${fieldCounter++}`; }
-function newRowId()   { return `row_${rowCounter++}`; }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-// Tìm field theo id trong tất cả rows
-function findField(rows: Row[], fieldId: string): Field | null {
-  for (const row of rows) {
-    const cell = row.cells.find((c) => c.field.id === fieldId);
-    if (cell) return cell.field;
-  }
-  return null;
-}
-
-// Xóa field khỏi rows, dọn dẹp row trống
-function removeField(rows: Row[], fieldId: string): Row[] {
-  return rows
-    .map((row) => ({
-      ...row,
-      cells: row.cells.filter((c) => c.field.id !== fieldId),
-    }))
-    .filter((row) => row.cells.length > 0);
-}
-
-// Parse droppable id: "rowId:slot" hoặc "canvas:new:full"
-function parseDropId(id: string): { rowId: string; slot: GridSlot } | null {
-  if (id === "canvas:new:full") return { rowId: "new", slot: "full" };
-  const parts = id.split(":");
-  if (parts.length === 2) {
-    const [rowId, slotStr] = parts;
-    const slot = slotStr as GridSlot;
-    if (slot === "left" || slot === "right" || slot === "full") {
-      return { rowId, slot };
-    }
-  }
-  return null;
-}
-
-// ─── FormBuilder ──────────────────────────────────────────────────────────────
-export default function FormBuilder() {
+export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activeItem, setActiveItem] = useState<ActiveItem | null>(null);
-  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [search, setSearch] = useState<string>("");
 
-  const isDraggingFromSidebar = !!activeItem?.fromSidebar;
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
-  );
+  const { activeItem, dropTarget, handleDragStart, handleDragOver, handleDragEnd } =
+    useDragHandlers(rows, setRows, setSelectedId);
+
+  const isDraggingFromSidebar = activeItem?.kind === "sidebar";
 
   const selectedField: Field | null =
     rows.flatMap((r) => r.cells.map((c) => c.field)).find((f) => f.id === selectedId) ?? null;
 
-  // ── Drag start ───────────────────────────────────────────────────────────────
-  const handleDragStart = (event: {
-    active: { id: string | number; data: { current?: Record<string, unknown> } };
-  }) => {
-    const { active } = event;
-    if (active.data.current?.fromSidebar) {
-      setActiveItem({
-        fromSidebar: true,
-        type: active.data.current.type as FieldType,
-        label: active.data.current.label as string,
-      });
-    } else {
-      setActiveItem({ id: active.id as string });
-    }
-  };
-
-  // ── Drag over — cập nhật dropTarget để highlight ─────────────────────────────
-  const handleDragOver = (event: DragOverEvent) => {
-    const overId = event.over?.id as string | undefined;
-    if (!overId) { setDropTarget(null); return; }
-    const parsed = parseDropId(overId);
-    if (parsed) {
-      setDropTarget({ rowId: parsed.rowId, slot: parsed.slot });
-    } else {
-      setDropTarget(null);
-    }
-  };
-
-  // ── Drag end ─────────────────────────────────────────────────────────────────
-  const handleDragEnd = (event: {
-    active: { id: string | number; data: { current?: Record<string, unknown> } };
-    over: { id: string | number } | null;
-  }) => {
-    const { active, over } = event;
-    setActiveItem(null);
-    setDropTarget(null);
-
-    if (!over) return;
-
-    const overId = over.id as string;
-    const parsed = parseDropId(overId);
-    if (!parsed) return;
-
-    const { rowId, slot } = parsed;
-
-    // ── Kéo từ sidebar vào canvas ────────────────────────────────────────────
-    if (active.data.current?.fromSidebar) {
-      const type = active.data.current.type as FieldType;
-      const newField: Field = {
-        id: newFieldId(),
-        type,
-        props: { ...defaultProps[type] },
-      };
-
-      setRows((prev) => {
-        // Thả vào "new" → tạo row mới cuối
-        if (rowId === "new") {
-          const newRow: Row = {
-            id: newRowId(),
-            cells: [{ field: newField, slot: "full" }],
-          };
-          return [...prev, newRow];
-        }
-
-        const targetRow = prev.find((r) => r.id === rowId);
-        if (!targetRow) return prev;
-
-        const isFull =
-          targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
-
-        // Thả vào nửa (left/right) của row đang full → tách thành 2 cell
-        if (isFull && (slot === "left" || slot === "right")) {
-          const existingCell = targetRow.cells[0];
-          const existingSlot: GridSlot = slot === "left" ? "right" : "left";
-          const updatedCells: RowField[] =
-            slot === "left"
-              ? [
-                  { field: newField, slot: "left" },
-                  { field: existingCell.field, slot: "right" },
-                ]
-              : [
-                  { field: existingCell.field, slot: "left" },
-                  { field: newField, slot: "right" },
-                ];
-          return prev.map((r) =>
-            r.id === rowId ? { ...r, cells: updatedCells } : r
-          );
-        }
-
-        // Thả vào full của row đang full → tạo row mới cuối
-        if (isFull && slot === "full") {
-          const newRow: Row = {
-            id: newRowId(),
-            cells: [{ field: newField, slot: "full" }],
-          };
-          return [...prev, newRow];
-        }
-
-        // Thả vào slot trống của row 2-cell
-        if (!isFull) {
-          const occupied = targetRow.cells.map((c) => c.slot);
-          if (!occupied.includes(slot as "left" | "right")) {
-            return prev.map((r) =>
-              r.id === rowId
-                ? { ...r, cells: [...r.cells, { field: newField, slot: slot as "left" | "right" }] }
-                : r
-            );
-          }
-          // Slot đã có → tạo row mới
-          const newRow: Row = {
-            id: newRowId(),
-            cells: [{ field: newField, slot: "full" }],
-          };
-          return [...prev, newRow];
-        }
-
-        return prev;
-      });
-
-      setSelectedId(newField.id);
-      return;
-    }
-  };
-
-  // ── Xóa field ────────────────────────────────────────────────────────────────
   const deleteField = useCallback((id: string) => {
     setRows((prev) => removeField(prev, id));
     setSelectedId((prev) => (prev === id ? null : prev));
   }, []);
 
-  // ── Cập nhật props ───────────────────────────────────────────────────────────
-  const updateFieldProps = useCallback(
-    (props: FieldProps) => {
-      setRows((prev) =>
-        prev.map((row) => ({
-          ...row,
-          cells: row.cells.map((cell) =>
-            cell.field.id === selectedId
-              ? { ...cell, field: { ...cell.field, props } }
-              : cell
-          ),
-        }))
-      );
-    },
-    [selectedId]
-  );
+  const updateFieldProps = useCallback((props: FieldProps) => {
+    setRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        cells: row.cells.map((cell) =>
+          cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell
+        ),
+      }))
+    );
+  }, [selectedId]);
 
-  // ── Render ───────────────────────────────────────────────────────────────────
+  const handleResizeRow = useCallback((rowId: string, newWidths: number[]) => {
+    setRows((prev) => prev.map((r) => r.id === rowId ? { ...r, colWidths: newWidths } : r));
+  }, []);
+
+  // Ghost overlay khi kéo field
+  const draggingField = activeItem?.kind === "row"
+    ? rows.flatMap((r) => r.cells).find((c) => c.field.id === (activeItem as { kind: "row"; rowId: string }).rowId)?.field
+    : null;
+
   return (
     <DndContext
       sensors={sensors}
@@ -238,22 +64,10 @@ export default function FormBuilder() {
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          height: "100vh",
-          background: "#0f1320",
-          color: "#c9d1e0",
-          fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif",
-          overflow: "hidden",
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f0f2f5", color: "#1e293b", fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", overflow: "hidden" }}>
+        <Header rows={rows} />
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          {/* LEFT */}
           <ComponentSidebar search={search} onSearchChange={setSearch} />
-
-          {/* CENTER */}
           <FormCanvas
             rows={rows}
             selectedId={selectedId}
@@ -261,39 +75,27 @@ export default function FormBuilder() {
             isDraggingFromSidebar={isDraggingFromSidebar}
             onSelectField={setSelectedId}
             onDeleteField={deleteField}
+            onResizeRow={handleResizeRow}
+            onDeselect={() => setSelectedId(null)}
           />
-
-          {/* RIGHT */}
-          <div
-            style={{
-              width: 240,
-              background: "#0e1525",
-              borderLeft: "1px solid #1a2235",
-              overflowY: "auto",
-              flexShrink: 0,
-            }}
-          >
+          <div style={{ width: 200, background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflowY: "auto", flexShrink: 0 }}>
             <PropertiesPanel field={selectedField} onChange={updateFieldProps} />
           </div>
         </div>
       </div>
 
-      {/* Drag overlay */}
-      <DragOverlay>
-        {activeItem?.fromSidebar && (
-          <div
-            style={{
-              background: "#1a2e4a",
-              border: "1.5px solid #3b9eff",
-              borderRadius: 6,
-              padding: "7px 12px",
-              color: "#3b9eff",
-              fontSize: 13,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-              pointerEvents: "none",
-            }}
-          >
-            {activeItem.label}
+      <DragOverlay dropAnimation={{ duration: 160, easing: "ease" }}>
+        {/* Overlay khi kéo từ sidebar */}
+        {isDraggingFromSidebar && (
+          <div style={{ background: "#eff6ff", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "7px 12px", color: "#2563eb", fontSize: 13, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
+            {(activeItem as { kind: "sidebar"; label: string }).label}
+          </div>
+        )}
+        {/* Overlay khi kéo field */}
+        {draggingField && (
+          <div style={{ background: "#fafafa", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "10px 14px", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", pointerEvents: "none", opacity: 0.9, minWidth: 180 }}>
+            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{draggingField.props.label}</div>
+            <div style={{ height: 28, background: "#f5f5f5", borderRadius: 4, border: "1px solid #d1d5db" }} />
           </div>
         )}
       </DragOverlay>
