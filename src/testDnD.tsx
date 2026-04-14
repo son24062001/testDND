@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import type { JSX } from "react";
 import {
   DndContext,
@@ -59,7 +59,7 @@ type ActiveItemKind =
   | { kind: "sidebar"; type: FieldType; label: string }
   | { kind: "row"; rowId: string };
 
-type GridSlot = "full" | "left" | "right";
+type GridSlot = "full" | "col0" | "col1" | "col2";
 
 interface RowField {
   field: Field;
@@ -69,6 +69,8 @@ interface RowField {
 interface Row {
   id: string;
   cells: RowField[];
+  // colWidths[i] = fractional width of column i, sum = 1. Only used when cells.length > 1.
+  colWidths: number[]; // length matches cells.length (2 or 3)
 }
 
 interface DropTarget {
@@ -452,57 +454,171 @@ function PropertiesPanel({ field, onChange }: { field: Field | null; onChange: (
 }
 
 // ─── DroppableCell ────────────────────────────────────────────────────────────
-function DroppableCell({ droppableId, isHighlighted, isEmpty, children, width }: {
-  droppableId: string; isHighlighted: boolean; isEmpty: boolean; children?: React.ReactNode; width: "full" | "half";
+function DroppableCell({ droppableId, isHighlighted, isEmpty, children, flexValue }: {
+  droppableId: string; isHighlighted: boolean; isEmpty: boolean; children?: React.ReactNode; flexValue: string;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: droppableId });
   const active = isOver || isHighlighted;
   return (
-    <div ref={setNodeRef} style={{ flex: width === "full" ? "1 1 100%" : "1 1 50%", minHeight: isEmpty ? 72 : undefined, borderRadius: 6, border: active ? "2px dashed #3b9eff" : isEmpty ? "2px dashed #1e2d42" : "2px solid transparent", background: active ? "rgba(59,158,255,0.07)" : "transparent", transition: "all 0.15s", display: "flex", alignItems: "stretch", position: "relative", overflow: "hidden" }}>
-      {isEmpty && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: active ? "#3b9eff" : "#2a3a50", fontSize: 11, pointerEvents: "none" }}>{active ? "Thả vào đây" : width === "half" ? "½ dòng trống" : ""}</div>}
-      <div style={{ flex: 1 }}>{children}</div>
+    <div ref={setNodeRef} style={{ flex: flexValue, minHeight: isEmpty ? 72 : undefined, borderRadius: 6, border: active ? "2px dashed #3b9eff" : isEmpty ? "2px dashed #1e2d42" : "2px solid transparent", background: active ? "rgba(59,158,255,0.07)" : "transparent", transition: "border-color 0.15s, background 0.15s", display: "flex", alignItems: "stretch", position: "relative", overflow: "hidden", minWidth: 0 }}>
+      {isEmpty && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: active ? "#3b9eff" : "#2a3a50", fontSize: 11, pointerEvents: "none" }}>{active ? "Thả vào đây" : "ô trống"}</div>}
+      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+// ─── ResizeHandle ─────────────────────────────────────────────────────────────
+// handleIndex: 0 = between col0 & col1, 1 = between col1 & col2
+// onResize receives new colWidths array
+function ResizeHandle({ handleIndex, colWidths, onResize }: {
+  handleIndex: number;
+  colWidths: number[];
+  onResize: (newWidths: number[]) => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(true);
+    const row = (e.currentTarget as HTMLElement).closest("[data-resize-row]") as HTMLElement | null;
+    if (!row) return;
+
+    // Snapshot widths at drag start
+    const startWidths = [...colWidths];
+    const totalCols = startWidths.length;
+    const MIN_FRAC = 0.1; // minimum 10% per column
+
+    const onMove = (mv: MouseEvent) => {
+      const rect = row.getBoundingClientRect();
+      const rowW = rect.width;
+      if (rowW === 0) return;
+
+      // Mouse position as fraction of row width
+      const mouseX = (mv.clientX - rect.left) / rowW;
+
+      // The handle sits between col[handleIndex] and col[handleIndex+1].
+      // Compute the left edge of the handle's left column.
+      let leftEdge = 0;
+      for (let i = 0; i < handleIndex; i++) leftEdge += startWidths[i];
+
+      // Desired width of left col = mouseX - leftEdge
+      let newLeft = mouseX - leftEdge;
+
+      // Right col gets whatever was left between these two cols
+      const combined = startWidths[handleIndex] + startWidths[handleIndex + 1];
+      let newRight = combined - newLeft;
+
+      // Clamp so neither col goes below MIN_FRAC
+      if (newLeft < MIN_FRAC) { newLeft = MIN_FRAC; newRight = combined - MIN_FRAC; }
+      if (newRight < MIN_FRAC) { newRight = MIN_FRAC; newLeft = combined - MIN_FRAC; }
+
+      const newWidths = [...startWidths];
+      newWidths[handleIndex] = newLeft;
+      newWidths[handleIndex + 1] = newRight;
+      onResize(newWidths);
+    };
+
+    const onUp = () => {
+      setDragging(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return (
+    <div
+      onMouseDown={handleMouseDown}
+      title="Kéo để thay đổi kích thước cột"
+      style={{ width: 12, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "col-resize", position: "relative", zIndex: 10, userSelect: "none" }}
+    >
+      <div style={{ width: dragging ? 3 : 2, height: "60%", minHeight: 24, borderRadius: 99, background: dragging ? "#3b9eff" : "#2a3a55", transition: "background 0.15s, width 0.1s" }} />
+      <div style={{ position: "absolute", inset: "0 -4px", cursor: "col-resize" }} onMouseDown={handleMouseDown} />
     </div>
   );
 }
 
 // ─── GridRow ──────────────────────────────────────────────────────────────────
-function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField }: {
+const SLOTS: GridSlot[] = ["col0", "col1", "col2"];
+
+function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField, onResizeRow }: {
   row: Row; selectedId: string | null; dropTarget: DropTarget | null;
   isDraggingFromSidebar: boolean;
   onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
+  onResizeRow: (rowId: string, newWidths: number[]) => void;
 }) {
   const isFull = row.cells.length === 1 && row.cells[0].slot === "full";
-  const leftCell = row.cells.find((c) => c.slot === "left" || c.slot === "full");
-  const rightCell = row.cells.find((c) => c.slot === "right");
+  const colCount = isFull ? 1 : row.cells.length;
 
-  const leftDropId = `${row.id}:left`;
-  const rightDropId = `${row.id}:right`;
-  const fullDropId = `${row.id}:full`;
+  // Build slot→cell map
+  const cellBySlot: Partial<Record<GridSlot, RowField>> = {};
+  for (const c of row.cells) cellBySlot[c.slot] = c;
 
-  const isTargetLeft = dropTarget?.rowId === row.id && dropTarget?.slot === "left";
-  const isTargetRight = dropTarget?.rowId === row.id && dropTarget?.slot === "right";
-  const isTargetFull = dropTarget?.rowId === row.id && dropTarget?.slot === "full";
+  // Helper: slot drop ID
+  const dropId = (slot: GridSlot) => `${row.id}:${slot}`;
+  const isTarget = (slot: GridSlot) => dropTarget?.rowId === row.id && dropTarget?.slot === slot;
+
+  // colWidths for rendering (normalised)
+  const widths = row.colWidths;
+
+  // When dragging from sidebar and row is full, show 3 empty targets flanking the full cell
+  if (isDraggingFromSidebar && isFull) {
+    const fullCell = cellBySlot["full"];
+    return (
+      <div data-resize-row style={{ display: "flex", gap: 0, marginBottom: 8, alignItems: "stretch" }}>
+        <DroppableCell droppableId={dropId("col0")} isHighlighted={isTarget("col0")} isEmpty flexValue="1 1 0%" />
+        <DroppableCell droppableId={dropId("full")} isHighlighted={isTarget("full")} isEmpty={false} flexValue="2 1 0%">
+          {fullCell && <FormField field={fullCell.field} isSelected={selectedId === fullCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(fullCell.field.id)} onDelete={onDeleteField} />}
+        </DroppableCell>
+        <DroppableCell droppableId={dropId("col1")} isHighlighted={isTarget("col1")} isEmpty flexValue="1 1 0%" />
+        <DroppableCell droppableId={dropId("col2")} isHighlighted={isTarget("col2")} isEmpty flexValue="1 1 0%" />
+      </div>
+    );
+  }
+
+  if (isFull) {
+    const fullCell = cellBySlot["full"];
+    return (
+      <div data-resize-row style={{ display: "flex", gap: 0, marginBottom: 8, alignItems: "stretch" }}>
+        <DroppableCell droppableId={dropId("full")} isHighlighted={isTarget("full")} isEmpty={false} flexValue="1 1 100%">
+          {fullCell && <FormField field={fullCell.field} isSelected={selectedId === fullCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(fullCell.field.id)} onDelete={onDeleteField} />}
+        </DroppableCell>
+      </div>
+    );
+  }
+
+  // Multi-col row: render occupied cols + resize handles + empty drop targets for remaining slots
+  // Slots in order: col0, col1, col2 (only show up to colCount + 1 if dragging)
+  const occupiedSlots = row.cells.map(c => c.slot) as GridSlot[];
+
+  // Which slots to show: always show occupied ones; if dragging show next empty slot too
+  const maxSlots = isDraggingFromSidebar && colCount < 3 ? colCount + 1 : colCount;
+  const displaySlots = SLOTS.slice(0, maxSlots);
 
   return (
-    <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "stretch" }}>
-        {isFull ? (
-          <>
-            {isDraggingFromSidebar && <DroppableCell droppableId={leftDropId} isHighlighted={isTargetLeft} isEmpty width="half" />}
-            <DroppableCell droppableId={fullDropId} isHighlighted={isTargetFull} isEmpty={false} width={isDraggingFromSidebar ? "half" : "full"}>
-              {leftCell && <FormField field={leftCell.field} isSelected={selectedId === leftCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(leftCell.field.id)} onDelete={onDeleteField} />}
+    <div data-resize-row style={{ display: "flex", gap: 0, marginBottom: 8, alignItems: "stretch" }}>
+      {displaySlots.map((slot, i) => {
+        const cell = cellBySlot[slot];
+        const isEmpty = !cell;
+        // flex value: use colWidths if within range, else equal share
+        const fw = widths[i] !== undefined ? `${widths[i]} 1 0%` : `1 1 0%`;
+        return (
+          <React.Fragment key={slot}>
+            {i > 0 && occupiedSlots.includes(SLOTS[i - 1]) && (occupiedSlots.includes(slot) || isEmpty) && (
+              <ResizeHandle
+                handleIndex={i - 1}
+                colWidths={widths}
+                onResize={(nw) => onResizeRow(row.id, nw)}
+              />
+            )}
+            <DroppableCell droppableId={dropId(slot)} isHighlighted={isTarget(slot)} isEmpty={isEmpty} flexValue={fw}>
+              {cell && <FormField field={cell.field} isSelected={selectedId === cell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(cell.field.id)} onDelete={onDeleteField} />}
             </DroppableCell>
-            {isDraggingFromSidebar && <DroppableCell droppableId={rightDropId} isHighlighted={isTargetRight} isEmpty width="half" />}
-          </>
-        ) : (
-          <>
-            <DroppableCell droppableId={leftDropId} isHighlighted={isTargetLeft} isEmpty={!leftCell} width="half">
-              {leftCell && <FormField field={leftCell.field} isSelected={selectedId === leftCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(leftCell.field.id)} onDelete={onDeleteField} />}
-            </DroppableCell>
-            <DroppableCell droppableId={rightDropId} isHighlighted={isTargetRight} isEmpty={!rightCell} width="half">
-              {rightCell && <FormField field={rightCell.field} isSelected={selectedId === rightCell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(rightCell.field.id)} onDelete={onDeleteField} />}
-            </DroppableCell>
-          </>
-        )}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -527,10 +643,11 @@ function BottomDropZone({ isEmpty, isDraggingFromSidebar }: { isEmpty: boolean; 
 }
 
 // ─── FormCanvas ───────────────────────────────────────────────────────────────
-function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField }: {
+function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField, onResizeRow }: {
   rows: Row[]; selectedId: string | null; dropTarget: DropTarget | null;
   isDraggingFromSidebar: boolean;
   onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
+  onResizeRow: (rowId: string, newWidths: number[]) => void;
 }) {
   const allFieldSortableIds = rows.flatMap((row) => row.cells.map((c) => `field:${c.field.id}`));
 
@@ -540,7 +657,7 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
         <div style={{ background: "#111827", borderRadius: 10, border: "1px solid #1a2235", padding: "24px 28px", minHeight: 500 }}>
           <SortableContext items={allFieldSortableIds} strategy={rectSortingStrategy}>
             {rows.map((row) => (
-              <GridRow key={row.id} row={row} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} />
+              <GridRow key={row.id} row={row} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} onResizeRow={onResizeRow} />
             ))}
           </SortableContext>
           <BottomDropZone isEmpty={rows.length === 0} isDraggingFromSidebar={isDraggingFromSidebar} />
@@ -557,7 +674,31 @@ function newFieldId() { return `field_${fieldCounter++}`; }
 function newRowId() { return `row_${rowCounter++}`; }
 
 function removeField(rows: Row[], fieldId: string): Row[] {
-  return rows.map((row) => ({ ...row, cells: row.cells.filter((c) => c.field.id !== fieldId) })).filter((row) => row.cells.length > 0);
+  return rows
+    .map((row) => {
+      const removedIdx = row.cells.findIndex((c) => c.field.id === fieldId);
+      if (removedIdx === -1) return row; // not in this row
+
+      const newCells = row.cells.filter((c) => c.field.id !== fieldId);
+
+      if (newCells.length === 0) return null; // remove entire row
+
+      if (newCells.length === 1) {
+        // Single cell remaining → reset to full-width
+        return { ...row, cells: [{ ...newCells[0], slot: "full" as GridSlot }], colWidths: [1] };
+      }
+
+      // Multiple cells remaining: remove the width entry for the deleted slot,
+      // then re-normalise so they sum to 1, and re-assign slot names by position.
+      const newWidths = row.colWidths.filter((_, i) => i !== removedIdx);
+      const total = newWidths.reduce((s, w) => s + w, 0);
+      const normWidths = newWidths.map((w) => w / total);
+      const slots: GridSlot[] = ["col0", "col1", "col2"];
+      const reslottedCells = newCells.map((c, i) => ({ ...c, slot: slots[i] }));
+
+      return { ...row, cells: reslottedCells, colWidths: normWidths };
+    })
+    .filter((row): row is Row => row !== null);
 }
 
 function parseDropId(id: string): { rowId: string; slot: GridSlot } | null {
@@ -566,7 +707,7 @@ function parseDropId(id: string): { rowId: string; slot: GridSlot } | null {
   if (parts.length === 2) {
     const [rowId, slotStr] = parts;
     const slot = slotStr as GridSlot;
-    if (slot === "left" || slot === "right" || slot === "full") return { rowId, slot };
+    if (slot === "full" || slot === "col0" || slot === "col1" || slot === "col2") return { rowId, slot };
   }
   return null;
 }
@@ -814,11 +955,9 @@ export default function App() {
             const newIdx = row.cells.findIndex((c) => c.field.id === overFieldId);
             if (oldIdx === -1 || newIdx === -1) return row;
             const newCells = arrayMove(row.cells, oldIdx, newIdx);
-            // Cập nhật lại slot
-            if (newCells.length === 2) {
-              return { ...row, cells: [{ ...newCells[0], slot: "left" }, { ...newCells[1], slot: "right" }] };
-            }
-            return { ...row, cells: newCells };
+            // Re-assign slots by position
+            const slots: GridSlot[] = ["col0", "col1", "col2"];
+            return { ...row, cells: newCells.map((c, i) => ({ ...c, slot: slots[i] })) };
           });
         }
 
@@ -866,27 +1005,54 @@ export default function App() {
       const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] }, createdAt: new Date().toISOString() };
 
       setRows((prev) => {
-        if (rowId === "new") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
+        // Drop onto bottom zone → new row
+        if (rowId === "new") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
+
         const targetRow = prev.find((r) => r.id === rowId);
         if (!targetRow) return prev;
-        const isFull = targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
 
-        if (isFull && (slot === "left" || slot === "right")) {
+        const isFull = targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
+        const colCount = targetRow.cells.length;
+
+        // Dropping onto a "full" cell of a full-row → new row
+        if (slot === "full") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
+
+        if (isFull) {
+          // Split full → 2 cols. New field goes into dropped slot position.
           const existingCell = targetRow.cells[0];
-          const updatedCells: RowField[] = slot === "left"
-            ? [{ field: newField, slot: "left" }, { field: existingCell.field, slot: "right" }]
-            : [{ field: existingCell.field, slot: "left" }, { field: newField, slot: "right" }];
-          return prev.map((r) => r.id === rowId ? { ...r, cells: updatedCells } : r);
-        }
-        if (isFull && slot === "full") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
-        if (!isFull) {
-          const occupied = targetRow.cells.map((c) => c.slot);
-          if (!occupied.includes(slot as "left" | "right")) {
-            return prev.map((r) => r.id === rowId ? { ...r, cells: [...r.cells, { field: newField, slot: slot as "left" | "right" }] } : r);
+          if (slot === "col0") {
+            // new on left, existing on right
+            return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: newField, slot: "col0" }, { field: existingCell.field, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
+          } else {
+            // col1 or col2: new on right, existing on left
+            return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: existingCell.field, slot: "col0" }, { field: newField, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
           }
-          return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
         }
-        return prev;
+
+        // Row already has 2 or 3 cols
+        if (colCount >= 3) {
+          // Already full → new row
+          return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
+        }
+
+        // colCount === 2: add a third column at the dropped position
+        const existingCells = [...targetRow.cells]; // col0, col1
+        // Determine insert index based on slot
+        const insertIdx = slot === "col0" ? 0 : slot === "col1" ? 1 : 2;
+        // Build new 3-cell array by inserting at insertIdx
+        const newCells: RowField[] = [];
+        const allSlots: GridSlot[] = ["col0", "col1", "col2"];
+        let srcIdx = 0;
+        for (let i = 0; i < 3; i++) {
+          if (i === insertIdx) {
+            newCells.push({ field: newField, slot: allSlots[i] });
+          } else {
+            // remap existing cell to new slot
+            const ec = existingCells[srcIdx++];
+            newCells.push({ ...ec, slot: allSlots[i] });
+          }
+        }
+        return prev.map((r) => r.id === rowId ? { ...r, cells: newCells, colWidths: [1/3, 1/3, 1/3] } : r);
       });
       setSelectedId(newField.id);
     }
@@ -901,6 +1067,10 @@ export default function App() {
     setRows((prev) => prev.map((row) => ({ ...row, cells: row.cells.map((cell) => cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell) })));
   }, [selectedId]);
 
+  const handleResizeRow = useCallback((rowId: string, newWidths: number[]) => {
+    setRows((prev) => prev.map((r) => r.id === rowId ? { ...r, colWidths: newWidths } : r));
+  }, []);
+
   // Ghost preview khi drag field
   const draggingField = activeItem?.kind === "row"
     ? rows.flatMap((r) => r.cells).find((c) => c.field.id === (activeItem as { kind: "row"; rowId: string }).rowId)?.field
@@ -912,7 +1082,7 @@ export default function App() {
         <Header rows={rows} />
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           <ComponentSidebar search={search} onSearchChange={setSearch} />
-          <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} />
+          <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} onResizeRow={handleResizeRow} />
           <div style={{ width: 240, background: "#0e1525", borderLeft: "1px solid #1a2235", overflowY: "auto", flexShrink: 0 }}>
             <PropertiesPanel field={selectedField} onChange={updateFieldProps} />
           </div>
