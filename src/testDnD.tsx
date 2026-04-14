@@ -41,6 +41,7 @@ interface Field {
   id: string;
   type: FieldType;
   props: FieldProps;
+  createdAt: string; // ISO datetime string
 }
 
 interface SidebarItemData {
@@ -580,6 +581,159 @@ function findFieldInRows(rows: Row[], fieldId: string): { rowId: string; slot: G
   return null;
 }
 
+// ─── Schema Generator ─────────────────────────────────────────────────────────
+function generateSchemaContent(rows: Row[]): string {
+  const allFields = rows.flatMap((row) => row.cells.map((cell) => cell.field));
+
+  const fieldType2Component: Record<FieldType, string> = {
+    text: "Input", number: "NumberPicker", decimal: "NumberPicker",
+    date: "DatePicker", multiline: "Input.TextArea", richtext: "RichText",
+    password: "Password", attachment: "Attachment", textlist: "TextList",
+    email: "Input", radio: "Radio.Group", switch: "Switch",
+    slider: "Slider", checkbox: "Checkbox", checkboxgroup: "Checkbox.Group",
+    select: "Select",
+  };
+  const fieldType2DataType: Record<FieldType, string> = {
+    text: "string", number: "number", decimal: "number", date: "string",
+    multiline: "string", richtext: "string", password: "string",
+    attachment: "string", textlist: "array", email: "string",
+    radio: "string", switch: "boolean", slider: "number",
+    checkbox: "boolean", checkboxgroup: "array", select: "string",
+  };
+
+  const schemaFields = allFields
+    .map((f) => {
+      const component = fieldType2Component[f.type];
+      const dataType = fieldType2DataType[f.type];
+      const placeholder = f.props.placeholder ? `\n        "placeholder": ${JSON.stringify(f.props.placeholder)},` : "";
+      return `    // id: ${f.id} | type: ${f.type} | created: ${f.createdAt}
+    "${f.id}": {
+      "type": "${dataType}",
+      "title": ${JSON.stringify(f.props.label)},
+      "x-decorator": "FormItem",
+      "x-component": "${component}",
+      "x-component-props": {${placeholder}
+      },
+      "x-decorator-props": {
+        "layout": "vertical",
+        "labelAlign": "left"
+      },
+      "required": ${f.props.required},
+      "name": "${f.id}",
+      "x-designable-id": "${f.id}",
+      "x-index": ${allFields.indexOf(f)}
+    }`;
+    })
+    .join(",\n");
+
+  const exportedAt = new Date().toISOString();
+  return `import { ISchema } from "@formily/react";
+
+// Schema exported at: ${exportedAt}
+// Total fields: ${allFields.length}
+//
+// Field summary:
+${allFields.map((f) => `// - ${f.id} | ${f.type} | label: "${f.props.label}" | created: ${f.createdAt}`).join("\n")}
+
+export const schema: ISchema = {
+  "type": "object",
+  "x-designable-id": "root_schema",
+  "properties": {
+    "root": {
+      "type": "void",
+      "x-component": "FormLayout",
+      "x-component-props": {},
+      "x-designable-id": "layout_root",
+      "x-index": 0,
+      "properties": {
+${schemaFields}
+      }
+    }
+  }
+};
+`;
+}
+
+function downloadSchemaFile(rows: Row[]) {
+  const content = generateSchemaContent(rows);
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "schema.ts";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Header ───────────────────────────────────────────────────────────────────
+function Header({ rows }: { rows: Row[] }) {
+  const hasFields = rows.some((r) => r.cells.length > 0);
+  const [clicked, setClicked] = useState(false);
+
+  const handleExport = () => {
+    if (!hasFields) return;
+    downloadSchemaFile(rows);
+    setClicked(true);
+    setTimeout(() => setClicked(false), 1500);
+  };
+
+  return (
+    <div style={{
+      height: 48, background: "#0e1525", borderBottom: "1px solid #1a2235",
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "0 20px", flexShrink: 0,
+    }}>
+      <span style={{ fontSize: 14, fontWeight: 600, color: "#c9d1e0", letterSpacing: "0.02em" }}>
+        Form Builder
+      </span>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500,
+            background: "transparent", border: "1px solid #2a3a55",
+            color: "#9ba8bf", cursor: "default",
+          }}
+        >
+          {/* Copy icon */}
+          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+          Copy schema
+        </button>
+        <button
+          onClick={handleExport}
+          disabled={!hasFields}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500,
+            background: hasFields ? (clicked ? "#2563eb" : "#3b82f6") : "#1a2235",
+            border: hasFields ? "1px solid #2563eb" : "1px solid #1e2d42",
+            color: hasFields ? "#fff" : "#3a4a60",
+            cursor: hasFields ? "pointer" : "not-allowed",
+            transition: "all 0.2s",
+            boxShadow: hasFields ? "0 1px 6px rgba(59,130,246,0.25)" : "none",
+          }}
+          title={hasFields ? "Download schema.ts" : "Add fields to canvas first"}
+          onMouseEnter={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#2563eb"; }}
+          onMouseLeave={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#3b82f6"; }}
+        >
+          {/* Download / Export icon */}
+          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          {clicked ? "Exported!" : "Export schema"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -696,7 +850,7 @@ export default function App() {
       if (!parsed) return;
       const { rowId, slot } = parsed;
       const type = data.type as FieldType;
-      const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] } };
+      const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] }, createdAt: new Date().toISOString() };
 
       setRows((prev) => {
         if (rowId === "new") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }] }];
@@ -742,6 +896,7 @@ export default function App() {
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
       <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#0f1320", color: "#c9d1e0", fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", overflow: "hidden" }}>
+        <Header rows={rows} />
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           <ComponentSidebar search={search} onSearchChange={setSearch} />
           <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} />
