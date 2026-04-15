@@ -2,9 +2,9 @@
 import { useState } from "react";
 import { arrayMove } from "@dnd-kit/sortable";
 import type { DragStartEvent, DragOverEvent, DragEndEvent } from "@dnd-kit/core";
-import type { Row, Field, FieldType, ActiveItemKind, DropTarget, GridSlot } from "./types";
-import { defaultProps } from "./constants";
-import { newFieldId, newRowId, parseDropId, findFieldInRows } from "./utils";
+import type { Row, Field, FieldType, ActiveItemKind, DropTarget, GridSlot } from "../types";
+import { defaultProps } from "../constants";
+import { newFieldId, newRowId, parseDropId, findFieldInRows } from "../utils";
 
 export function useDragHandlers(
   rows: Row[],
