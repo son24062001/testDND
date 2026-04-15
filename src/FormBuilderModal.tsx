@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import type { JSX } from "react";
 import {
   DndContext,
@@ -9,14 +9,13 @@ import {
   closestCenter,
   useDroppable,
   useDraggable,
-  
 } from "@dnd-kit/core";
 import {
   useSortable,
   SortableContext,
   rectSortingStrategy,
   arrayMove,
-} from "@dnd-kit/sortable"
+} from "@dnd-kit/sortable";
 import type { DragOverEvent, DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 
@@ -41,7 +40,7 @@ interface Field {
   id: string;
   type: FieldType;
   props: FieldProps;
-  createdAt: string; // ISO datetime string
+  createdAt: string;
 }
 
 interface SidebarItemData {
@@ -69,8 +68,7 @@ interface RowField {
 interface Row {
   id: string;
   cells: RowField[];
-  // colWidths[i] = fractional width of column i, sum = 1. Only used when cells.length > 1.
-  colWidths: number[]; // length matches cells.length (2 or 3)
+  colWidths: number[];
 }
 
 interface DropTarget {
@@ -160,6 +158,101 @@ const defaultProps: Record<FieldType, FieldProps> = {
   select: { label: "Select", options: ["Option 1", "Option 2", "Option 3"], required: false },
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+let fieldCounter = 1;
+let rowCounter = 1;
+function newFieldId() { return `field_${fieldCounter++}`; }
+function newRowId() { return `row_${rowCounter++}`; }
+
+function removeField(rows: Row[], fieldId: string): Row[] {
+  return rows
+    .map((row) => {
+      const removedIdx = row.cells.findIndex((c) => c.field.id === fieldId);
+      if (removedIdx === -1) return row;
+      const newCells = row.cells.filter((c) => c.field.id !== fieldId);
+      if (newCells.length === 0) return null;
+      if (newCells.length === 1) {
+        return { ...row, cells: [{ ...newCells[0], slot: "full" as GridSlot }], colWidths: [1] };
+      }
+      const newWidths = row.colWidths.filter((_, i) => i !== removedIdx);
+      const total = newWidths.reduce((s, w) => s + w, 0);
+      const normWidths = newWidths.map((w) => w / total);
+      const slots: GridSlot[] = ["col0", "col1", "col2"];
+      const reslottedCells = newCells.map((c, i) => ({ ...c, slot: slots[i] }));
+      return { ...row, cells: reslottedCells, colWidths: normWidths };
+    })
+    .filter((row): row is Row => row !== null);
+}
+
+function parseDropId(id: string): { rowId: string; slot: GridSlot } | null {
+  if (id === "canvas:new:full") return { rowId: "new", slot: "full" };
+  const parts = id.split(":");
+  if (parts.length === 2) {
+    const [rowId, slotStr] = parts;
+    const slot = slotStr as GridSlot;
+    if (slot === "full" || slot === "col0" || slot === "col1" || slot === "col2") return { rowId, slot };
+  }
+  return null;
+}
+
+function findFieldInRows(rows: Row[], fieldId: string): { rowId: string; slot: GridSlot } | null {
+  for (const row of rows) {
+    const cell = row.cells.find((c) => c.field.id === fieldId);
+    if (cell) return { rowId: row.id, slot: cell.slot };
+  }
+  return null;
+}
+
+// ─── Schema Generator ─────────────────────────────────────────────────────────
+function generateSchemaContent(rows: Row[]): string {
+  const allFields = rows.flatMap((row) => row.cells.map((cell) => cell.field));
+  const fieldType2Component: Record<FieldType, string> = {
+    text: "Input", number: "NumberPicker", decimal: "NumberPicker",
+    date: "DatePicker", multiline: "Input.TextArea", richtext: "RichText",
+    password: "Password", attachment: "Attachment", textlist: "TextList",
+    email: "Input", radio: "Radio.Group", switch: "Switch",
+    slider: "Slider", checkbox: "Checkbox", checkboxgroup: "Checkbox.Group",
+    select: "Select",
+  };
+  const fieldType2DataType: Record<FieldType, string> = {
+    text: "string", number: "number", decimal: "number", date: "string",
+    multiline: "string", richtext: "string", password: "string",
+    attachment: "string", textlist: "array", email: "string",
+    radio: "string", switch: "boolean", slider: "number",
+    checkbox: "boolean", checkboxgroup: "array", select: "string",
+  };
+  const schemaFields = allFields.map((f) => {
+    const component = fieldType2Component[f.type];
+    const dataType = fieldType2DataType[f.type];
+    const placeholder = f.props.placeholder ? `\n        "placeholder": ${JSON.stringify(f.props.placeholder)},` : "";
+    return `    "${f.id}": {
+      "type": "${dataType}",
+      "title": ${JSON.stringify(f.props.label)},
+      "x-decorator": "FormItem",
+      "x-component": "${component}",
+      "x-component-props": {${placeholder}
+      },
+      "x-decorator-props": { "layout": "vertical", "labelAlign": "left" },
+      "required": ${f.props.required},
+      "name": "${f.id}",
+      "x-designable-id": "${f.id}",
+      "x-index": ${allFields.indexOf(f)}
+    }`;
+  }).join(",\n");
+  const exportedAt = new Date().toLocaleString("vi-VN");
+  return `import { ISchema } from "@formily/react";\n\n// Schema exported at: ${exportedAt}\n// Total fields: ${allFields.length}\n\nexport const schema: ISchema = {\n  "type": "object",\n  "properties": {\n    "root": {\n      "type": "void",\n      "x-component": "FormLayout",\n      "properties": {\n${schemaFields}\n      }\n    }\n  }\n};\n`;
+}
+
+function downloadSchemaFile(rows: Row[]) {
+  const content = generateSchemaContent(rows);
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "schema.ts";
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
 // ─── Icon ─────────────────────────────────────────────────────────────────────
 function Icon({ d, size = 14 }: { d: string; size?: number }) {
   return (
@@ -170,7 +263,6 @@ function Icon({ d, size = 14 }: { d: string; size?: number }) {
   );
 }
 
-// Icon 6 chấm 2×3 — dùng cho grip handle từng ô
 function GripDots({ size = 14, color = "currentColor" }: { size?: number; color?: string }) {
   const r = size * 0.115;
   const x1 = size * 0.32, x2 = size * 0.68;
@@ -289,7 +381,7 @@ function ComponentSidebar({ search, onSearchChange }: { search: string; onSearch
   );
 }
 
-// ─── FormField — mỗi ô có grip handle bên trái ────────────────────────────────
+// ─── FormField ────────────────────────────────────────────────────────────────
 interface FormFieldProps {
   field: Field;
   isSelected: boolean;
@@ -299,38 +391,23 @@ interface FormFieldProps {
 }
 
 function FormField({ field, isSelected, isDraggingFromSidebar, onClick, onDelete }: FormFieldProps) {
-  const {
-    attributes, listeners, setNodeRef,
-    transform, transition, isDragging,
-  } = useSortable({
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `field:${field.id}`,
     data: { kind: "field", fieldId: field.id },
     disabled: isDraggingFromSidebar,
   });
-
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition: transition ?? undefined,
     opacity: isDragging ? 0.3 : 1,
     position: "relative",
   };
-
   return (
     <div ref={setNodeRef} style={style} onClick={onClick}>
       <div
-        style={{
-          border: isSelected ? "1.5px solid #3b9eff" : "1.5px solid transparent",
-          borderRadius: 6,
-          background: isSelected ? "rgba(59,130,246,0.04)" : "transparent",
-          padding: "10px 36px 10px 30px", // left padding cho grip, right padding cho trash
-          position: "relative",
-          transition: "border-color 0.15s, background 0.15s",
-          marginBottom: 2,
-          cursor: "default",
-        }}
+        style={{ border: isSelected ? "1.5px solid #3b9eff" : "1.5px solid transparent", borderRadius: 6, background: isSelected ? "rgba(59,130,246,0.04)" : "transparent", padding: "10px 36px 10px 30px", position: "relative", transition: "border-color 0.15s, background 0.15s", marginBottom: 2, cursor: "default" }}
         onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
           if (!isSelected) e.currentTarget.style.borderColor = "#93afc7";
-          // Hiện grip và trash khi hover
           const grip = e.currentTarget.querySelector<HTMLElement>(".field-grip");
           const trash = e.currentTarget.querySelector<HTMLElement>(".field-trash");
           if (grip) grip.style.opacity = "1";
@@ -346,29 +423,9 @@ function FormField({ field, isSelected, isDraggingFromSidebar, onClick, onDelete
           }
         }}
       >
-        {/* ── Grip handle bên trái ── */}
         {!isDraggingFromSidebar && (
-          <div
-            className="field-grip"
-            {...listeners}
-            {...attributes}
-            title="Kéo để di chuyển"
-            style={{
-              position: "absolute",
-              left: 6,
-              top: "50%",
-              transform: "translateY(-50%)",
-              width: 20,
-              height: 20,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: isDragging ? "#3b9eff" : "#94a3b8",
-              cursor: isDragging ? "grabbing" : "grab",
-              opacity: isSelected ? 1 : 0,
-              transition: "opacity 0.15s, color 0.15s",
-              zIndex: 2,
-            }}
+          <div className="field-grip" {...listeners} {...attributes} title="Kéo để di chuyển"
+            style={{ position: "absolute", left: 6, top: "50%", transform: "translateY(-50%)", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", color: isDragging ? "#3b9eff" : "#94a3b8", cursor: isDragging ? "grabbing" : "grab", opacity: isSelected ? 1 : 0, transition: "opacity 0.15s, color 0.15s", zIndex: 2 }}
             onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.color = "#3b9eff"; }}
             onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { if (!isDragging) e.currentTarget.style.color = "#94a3b8"; }}
             onClick={(e) => e.stopPropagation()}
@@ -376,25 +433,18 @@ function FormField({ field, isSelected, isDraggingFromSidebar, onClick, onDelete
             <GripDots size={14} color="currentColor" />
           </div>
         )}
-
-        {/* ── Trash button bên phải ── */}
-        <button
-          className="field-trash"
+        <button className="field-trash"
           onClick={(e: React.MouseEvent<HTMLButtonElement>) => { e.stopPropagation(); onDelete(field.id); }}
           style={{ position: "absolute", right: 8, top: 8, background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 4, color: "#ef4444", cursor: "pointer", padding: "3px 5px", display: "flex", alignItems: "center", opacity: isSelected ? 1 : 0, transition: "opacity 0.15s" }}
         >
           <Icon d={icons.trash} size={12} />
         </button>
-
-        {/* ── Label ── */}
         {field.type !== "checkbox" && (
           <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ fontSize: 13, fontWeight: 500, color: "#1e293b" }}>{field.props.label}</span>
             {field.props.required && <span style={{ color: "#ef4444", fontSize: 12 }}>*</span>}
           </div>
         )}
-
-        {/* ── Field input ── */}
         {renderField(field.type, field.props)}
       </div>
     </div>
@@ -421,7 +471,7 @@ function PropertiesPanel({ field, onChange }: { field: Field | null; onChange: (
   return (
     <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>{field.type.charAt(0).toUpperCase() + field.type.slice(1)} — General</div>
-      <PropRow label="ID" required><span style={{ color: "#6b7280", fontSize: 12 }}>{field.id}</span></PropRow>
+      <PropRow label="ID"><span style={{ color: "#6b7280", fontSize: 12 }}>{field.id}</span></PropRow>
       <PropRow label="Label"><input value={field.props.label || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => update("label", e.target.value)} style={propInputStyle} /></PropRow>
       <PropRow label="Required">
         <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
@@ -468,71 +518,40 @@ function DroppableCell({ droppableId, isHighlighted, isEmpty, children, flexValu
 }
 
 // ─── ResizeHandle ─────────────────────────────────────────────────────────────
-// handleIndex: 0 = between col0 & col1, 1 = between col1 & col2
-// onResize receives new colWidths array
 function ResizeHandle({ handleIndex, colWidths, onResize }: {
-  handleIndex: number;
-  colWidths: number[];
-  onResize: (newWidths: number[]) => void;
+  handleIndex: number; colWidths: number[]; onResize: (newWidths: number[]) => void;
 }) {
   const [dragging, setDragging] = useState(false);
-
   const handleMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragging(true);
+    e.preventDefault(); e.stopPropagation(); setDragging(true);
     const row = (e.currentTarget as HTMLElement).closest("[data-resize-row]") as HTMLElement | null;
     if (!row) return;
-
-    // Snapshot widths at drag start
     const startWidths = [...colWidths];
-    const MIN_FRAC = 0.1; // minimum 10% per column
-
+    const MIN_FRAC = 0.1;
     const onMove = (mv: MouseEvent) => {
       const rect = row.getBoundingClientRect();
       const rowW = rect.width;
       if (rowW === 0) return;
-
-      // Mouse position as fraction of row width
       const mouseX = (mv.clientX - rect.left) / rowW;
-
-      // The handle sits between col[handleIndex] and col[handleIndex+1].
-      // Compute the left edge of the handle's left column.
       let leftEdge = 0;
       for (let i = 0; i < handleIndex; i++) leftEdge += startWidths[i];
-
-      // Desired width of left col = mouseX - leftEdge
       let newLeft = mouseX - leftEdge;
-
-      // Right col gets whatever was left between these two cols
       const combined = startWidths[handleIndex] + startWidths[handleIndex + 1];
       let newRight = combined - newLeft;
-
-      // Clamp so neither col goes below MIN_FRAC
       if (newLeft < MIN_FRAC) { newLeft = MIN_FRAC; newRight = combined - MIN_FRAC; }
       if (newRight < MIN_FRAC) { newRight = MIN_FRAC; newLeft = combined - MIN_FRAC; }
-
       const newWidths = [...startWidths];
       newWidths[handleIndex] = newLeft;
       newWidths[handleIndex + 1] = newRight;
       onResize(newWidths);
     };
-
-    const onUp = () => {
-      setDragging(false);
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
+    const onUp = () => { setDragging(false); window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
-
   return (
-    <div
-      onMouseDown={handleMouseDown}
-      title="Kéo để thay đổi kích thước cột"
-      style={{ width: 12, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "col-resize", position: "relative", zIndex: 10, userSelect: "none" }}
-    >
+    <div onMouseDown={handleMouseDown} title="Kéo để thay đổi kích thước cột"
+      style={{ width: 12, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", cursor: "col-resize", position: "relative", zIndex: 10, userSelect: "none" }}>
       <div style={{ width: dragging ? 3 : 2, height: "60%", minHeight: 24, borderRadius: 99, background: dragging ? "#3b9eff" : "#93afc7", transition: "background 0.15s, width 0.1s" }} />
       <div style={{ position: "absolute", inset: "0 -4px", cursor: "col-resize" }} onMouseDown={handleMouseDown} />
     </div>
@@ -550,19 +569,12 @@ function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectF
 }) {
   const isFull = row.cells.length === 1 && row.cells[0].slot === "full";
   const colCount = isFull ? 1 : row.cells.length;
-
-  // Build slot→cell map
   const cellBySlot: Partial<Record<GridSlot, RowField>> = {};
   for (const c of row.cells) cellBySlot[c.slot] = c;
-
-  // Helper: slot drop ID
   const dropId = (slot: GridSlot) => `${row.id}:${slot}`;
   const isTarget = (slot: GridSlot) => dropTarget?.rowId === row.id && dropTarget?.slot === slot;
-
-  // colWidths for rendering (normalised)
   const widths = row.colWidths;
 
-  // When dragging from sidebar and row is full, show 3 empty targets flanking the full cell
   if (isDraggingFromSidebar && isFull) {
     const fullCell = cellBySlot["full"];
     return (
@@ -588,11 +600,7 @@ function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectF
     );
   }
 
-  // Multi-col row: render occupied cols + resize handles + empty drop targets for remaining slots
-  // Slots in order: col0, col1, col2 (only show up to colCount + 1 if dragging)
   const occupiedSlots = row.cells.map(c => c.slot) as GridSlot[];
-
-  // Which slots to show: always show occupied ones; if dragging show next empty slot too
   const maxSlots = isDraggingFromSidebar && colCount < 3 ? colCount + 1 : colCount;
   const displaySlots = SLOTS.slice(0, maxSlots);
 
@@ -601,16 +609,11 @@ function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectF
       {displaySlots.map((slot, i) => {
         const cell = cellBySlot[slot];
         const isEmpty = !cell;
-        // flex value: use colWidths if within range, else equal share
         const fw = widths[i] !== undefined ? `${widths[i]} 1 0%` : `1 1 0%`;
         return (
           <React.Fragment key={slot}>
             {i > 0 && occupiedSlots.includes(SLOTS[i - 1]) && (occupiedSlots.includes(slot) || isEmpty) && (
-              <ResizeHandle
-                handleIndex={i - 1}
-                colWidths={widths}
-                onResize={(nw) => onResizeRow(row.id, nw)}
-              />
+              <ResizeHandle handleIndex={i - 1} colWidths={widths} onResize={(nw) => onResizeRow(row.id, nw)} />
             )}
             <DroppableCell droppableId={dropId(slot)} isHighlighted={isTarget(slot)} isEmpty={isEmpty} flexValue={fw}>
               {cell && <FormField field={cell.field} isSelected={selectedId === cell.field.id} isDraggingFromSidebar={isDraggingFromSidebar} onClick={() => onSelectField(cell.field.id)} onDelete={onDeleteField} />}
@@ -650,23 +653,12 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
   onDeselect: () => void;
 }) {
   const allFieldSortableIds = rows.flatMap((row) => row.cells.map((c) => `field:${c.field.id}`));
-
   return (
-    <div
-      style={{ flex: 1, overflowY: "auto", background: "#f0f2f5", padding: "15px" }}
-      onClick={(e: React.MouseEvent<HTMLDivElement>) => {
-        // Bỏ focus khi click vào vùng ngoài card
-        if (e.target === e.currentTarget) onDeselect();
-      }}
-    >
+    <div style={{ flex: 1, overflowY: "auto", background: "#f0f2f5", padding: "15px" }}
+      onClick={(e: React.MouseEvent<HTMLDivElement>) => { if (e.target === e.currentTarget) onDeselect(); }}>
       <div style={{ margin: "0 auto" }}>
-        <div
-          style={{ background: "#fafafa", borderRadius: 10, border: "1px solid #e2e8f0", padding: "15px", minHeight: 500 }}
-          onClick={(e: React.MouseEvent<HTMLDivElement>) => {
-            // Bỏ focus khi click vào vùng trống trong card (không phải field)
-            if (e.target === e.currentTarget) onDeselect();
-          }}
-        >
+        <div style={{ background: "#fafafa", borderRadius: 10, border: "1px solid #e2e8f0", padding: "15px", minHeight: 500 }}
+          onClick={(e: React.MouseEvent<HTMLDivElement>) => { if (e.target === e.currentTarget) onDeselect(); }}>
           <SortableContext items={allFieldSortableIds} strategy={rectSortingStrategy}>
             {rows.map((row) => (
               <GridRow key={row.id} row={row} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} onResizeRow={onResizeRow} />
@@ -679,254 +671,103 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
   );
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-let fieldCounter = 1;
-let rowCounter = 1;
-function newFieldId() { return `field_${fieldCounter++}`; }
-function newRowId() { return `row_${rowCounter++}`; }
-
-function removeField(rows: Row[], fieldId: string): Row[] {
-  return rows
-    .map((row) => {
-      const removedIdx = row.cells.findIndex((c) => c.field.id === fieldId);
-      if (removedIdx === -1) return row; // not in this row
-
-      const newCells = row.cells.filter((c) => c.field.id !== fieldId);
-
-      if (newCells.length === 0) return null; // remove entire row
-
-      if (newCells.length === 1) {
-        // Single cell remaining → reset to full-width
-        return { ...row, cells: [{ ...newCells[0], slot: "full" as GridSlot }], colWidths: [1] };
-      }
-
-      // Multiple cells remaining: remove the width entry for the deleted slot,
-      // then re-normalise so they sum to 1, and re-assign slot names by position.
-      const newWidths = row.colWidths.filter((_, i) => i !== removedIdx);
-      const total = newWidths.reduce((s, w) => s + w, 0);
-      const normWidths = newWidths.map((w) => w / total);
-      const slots: GridSlot[] = ["col0", "col1", "col2"];
-      const reslottedCells = newCells.map((c, i) => ({ ...c, slot: slots[i] }));
-
-      return { ...row, cells: reslottedCells, colWidths: normWidths };
-    })
-    .filter((row): row is Row => row !== null);
-}
-
-function parseDropId(id: string): { rowId: string; slot: GridSlot } | null {
-  if (id === "canvas:new:full") return { rowId: "new", slot: "full" };
-  const parts = id.split(":");
-  if (parts.length === 2) {
-    const [rowId, slotStr] = parts;
-    const slot = slotStr as GridSlot;
-    if (slot === "full" || slot === "col0" || slot === "col1" || slot === "col2") return { rowId, slot };
-  }
-  return null;
-}
-
-// Tìm field trong tất cả rows theo fieldId
-function findFieldInRows(rows: Row[], fieldId: string): { rowId: string; slot: GridSlot } | null {
-  for (const row of rows) {
-    const cell = row.cells.find((c) => c.field.id === fieldId);
-    if (cell) return { rowId: row.id, slot: cell.slot };
-  }
-  return null;
-}
-
-// ─── Schema Generator ─────────────────────────────────────────────────────────
-function generateSchemaContent(rows: Row[]): string {
-  const allFields = rows.flatMap((row) => row.cells.map((cell) => cell.field));
-
-  const fieldType2Component: Record<FieldType, string> = {
-    text: "Input", number: "NumberPicker", decimal: "NumberPicker",
-    date: "DatePicker", multiline: "Input.TextArea", richtext: "RichText",
-    password: "Password", attachment: "Attachment", textlist: "TextList",
-    email: "Input", radio: "Radio.Group", switch: "Switch",
-    slider: "Slider", checkbox: "Checkbox", checkboxgroup: "Checkbox.Group",
-    select: "Select",
-  };
-  const fieldType2DataType: Record<FieldType, string> = {
-    text: "string", number: "number", decimal: "number", date: "string",
-    multiline: "string", richtext: "string", password: "string",
-    attachment: "string", textlist: "array", email: "string",
-    radio: "string", switch: "boolean", slider: "number",
-    checkbox: "boolean", checkboxgroup: "array", select: "string",
-  };
-
-  const schemaFields = allFields
-    .map((f) => {
-      const component = fieldType2Component[f.type];
-      const dataType = fieldType2DataType[f.type];
-      const placeholder = f.props.placeholder ? `\n        "placeholder": ${JSON.stringify(f.props.placeholder)},` : "";
-      return `    // id: ${f.id} | type: ${f.type} | created: ${f.createdAt}
-    "${f.id}": {
-      "type": "${dataType}",
-      "title": ${JSON.stringify(f.props.label)},
-      "x-decorator": "FormItem",
-      "x-component": "${component}",
-      "x-component-props": {${placeholder}
-      },
-      "x-decorator-props": {
-        "layout": "vertical",
-        "labelAlign": "left"
-      },
-      "required": ${f.props.required},
-      "name": "${f.id}",
-      "x-designable-id": "${f.id}",
-      "x-index": ${allFields.indexOf(f)}
-    }`;
-    })
-    .join(",\n");
-
-  const exportedAt = new Date().toLocaleString("vi-VN");
-  return `import { ISchema } from "@formily/react";
-
-// Schema exported at: ${exportedAt}
-// Total fields: ${allFields.length}
-//
-// Field summary:
-${allFields.map((f) => `// - ${f.id} | ${f.type} | label: "${f.props.label}" | created: ${f.createdAt}`).join("\n")}
-
-export const schema: ISchema = {
-  "type": "object",
-  "x-designable-id": "root_schema",
-  "properties": {
-    "root": {
-      "type": "void",
-      "x-component": "FormLayout",
-      "x-component-props": {},
-      "x-designable-id": "layout_root",
-      "x-index": 0,
-      "properties": {
-${schemaFields}
-      }
-    }
-  }
-};
-`;
-}
-
-function downloadSchemaFile(rows: Row[]) {
-  const content = generateSchemaContent(rows);
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "schema.ts";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-// ─── Header ───────────────────────────────────────────────────────────────────
-function Header({ rows }: { rows: Row[] }) {
+// ─── HeaderButtons — chỉ phần buttons, dùng trong titlebar modal ──────────────
+function HeaderButtons({ rows }: { rows: Row[] }) {
   const hasFields = rows.some((r) => r.cells.length > 0);
   const [clicked, setClicked] = useState(false);
-
   const handleExport = () => {
     if (!hasFields) return;
     downloadSchemaFile(rows);
     setClicked(true);
     setTimeout(() => setClicked(false), 1500);
   };
-
   return (
-    <div style={{
-      height: 48, background: "#ffffff", borderBottom: "1px solid #e2e8f0",
-      display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "0 20px", flexShrink: 0,
-    }}>
-      <span style={{ fontSize: 14, fontWeight: 600, color: "#1e293b", letterSpacing: "0.02em" }}>
-        Form Builder
-      </span>
-      <div style={{ display: "flex", gap: 10 }}>
-        <button
-          style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500,
-            background: "transparent", border: "1px solid #2a3a55",
-            color: "#475569", cursor: "default",
-          }}
-        >
-          {/* Copy icon */}
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-          </svg>
-          Copy schema
-        </button>
-        <button
-          onClick={handleExport}
-          disabled={!hasFields}
-          style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "6px 14px", borderRadius: 6, fontSize: 13, fontWeight: 500,
-            background: hasFields ? (clicked ? "#2563eb" : "#3b82f6") : "#e8edf3",
-            border: hasFields ? "1px solid #2563eb" : "1px solid #1e2d42",
-            color: hasFields ? "#fff" : "#94a3b8",
-            cursor: hasFields ? "pointer" : "not-allowed",
-            transition: "all 0.2s",
-            boxShadow: hasFields ? "0 1px 6px rgba(59,130,246,0.25)" : "none",
-          }}
-          title={hasFields ? "Download schema.ts" : "Add fields to canvas first"}
-          onMouseEnter={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#2563eb"; }}
-          onMouseLeave={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#3b82f6"; }}
-        >
-          {/* Download / Export icon */}
-          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          {clicked ? "Exported!" : "Export schema"}
-        </button>
-      </div>
+    <div style={{ display: "flex", gap: 8 }}>
+      <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500, background: "transparent", border: "1px solid #2a3a55", color: "#475569", cursor: "default" }}>
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+        Copy schema
+      </button>
+      <button onClick={handleExport} disabled={!hasFields}
+        style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500, background: hasFields ? (clicked ? "#2563eb" : "#3b82f6") : "#e8edf3", border: hasFields ? "1px solid #2563eb" : "1px solid #1e2d42", color: hasFields ? "#fff" : "#94a3b8", cursor: hasFields ? "pointer" : "not-allowed", transition: "all 0.2s" }}
+        onMouseEnter={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#2563eb"; }}
+        onMouseLeave={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#3b82f6"; }}
+      >
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        {clicked ? "Exported!" : "Export schema"}
+      </button>
     </div>
   );
 }
 
-// ─── App ──────────────────────────────────────────────────────────────────────
-export default function App() {
+// ─── FormBuilderModal ─────────────────────────────────────────────────────────
+interface FormBuilderModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+export function FormBuilderModal({ isOpen, onClose }: FormBuilderModalProps) {
   const [rows, setRows] = useState<Row[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<ActiveItemKind | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [search, setSearch] = useState<string>("");
+  const [isMinimized, setIsMinimized] = useState(false);
+
+  // ── Drag-to-move modal ────────────────────────────────────────────────────────
+  const [pos, setPos] = useState({ x: 80, y: 60 });
+  const draggingModal = useRef(false);
+  const dragOffset = useRef({ x: 0, y: 0 });
+
+  const onHeaderMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    draggingModal.current = true;
+    dragOffset.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingModal.current) return;
+      const newX = Math.max(0, Math.min(window.innerWidth - 200, e.clientX - dragOffset.current.x));
+      const newY = Math.max(0, Math.min(window.innerHeight - 60, e.clientY - dragOffset.current.y));
+      setPos({ x: newX, y: newY });
+    };
+    const onUp = () => { draggingModal.current = false; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
 
   const isDraggingFromSidebar = activeItem?.kind === "sidebar";
-
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const selectedField: Field | null = rows.flatMap((r) => r.cells.map((c) => c.field)).find((f) => f.id === selectedId) ?? null;
+  const fieldCount = rows.flatMap((r) => r.cells).length;
 
-  // ── Drag start ───────────────────────────────────────────────────────────────
   const handleDragStart = (event: DragStartEvent) => {
     const data = event.active.data.current as Record<string, unknown> | undefined;
     if (!data) return;
-    if (data.kind === "sidebar") {
-      setActiveItem({ kind: "sidebar", type: data.type as FieldType, label: data.label as string });
-    } else if (data.kind === "field") {
-      setActiveItem({ kind: "row", rowId: data.fieldId as string }); // reuse kind row để track
-    }
+    if (data.kind === "sidebar") setActiveItem({ kind: "sidebar", type: data.type as FieldType, label: data.label as string });
+    else if (data.kind === "field") setActiveItem({ kind: "row", rowId: data.fieldId as string });
   };
 
-  // ── Drag over ────────────────────────────────────────────────────────────────
   const handleDragOver = (event: DragOverEvent) => {
     const data = event.active.data.current as Record<string, unknown> | undefined;
     const overId = event.over?.id as string | undefined;
-
     if (!overId) { setDropTarget(null); return; }
-
     if (data?.kind === "sidebar") {
       const parsed = parseDropId(overId);
       if (parsed) setDropTarget({ rowId: parsed.rowId, slot: parsed.slot });
       else setDropTarget(null);
       return;
     }
-
-    // kéo field: cập nhật dropTarget để highlight ô đích
     if (data?.kind === "field") {
-      // overId dạng "field:field_X" → tìm row+slot của field đó
       const overFieldId = (overId as string).replace("field:", "");
       const dstInfo = findFieldInRows(rows, overFieldId);
       if (dstInfo) setDropTarget({ rowId: dstInfo.rowId, slot: dstInfo.slot });
@@ -934,32 +775,22 @@ export default function App() {
     }
   };
 
-  // ── Drag end ─────────────────────────────────────────────────────────────────
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     const data = active.data.current as Record<string, unknown> | undefined;
-
-    setActiveItem(null);
-    setDropTarget(null);
+    setActiveItem(null); setDropTarget(null);
     if (!over) return;
 
-    // ── Field reorder (kéo grip trên ô) ────────────────────────────────────
     if (data?.kind === "field") {
-      const activeFieldSortId = active.id as string; // "field:field_X"
-      const overSortId = over.id as string;           // "field:field_Y"
-
+      const activeFieldSortId = active.id as string;
+      const overSortId = over.id as string;
       if (activeFieldSortId === overSortId) return;
-
       const activeFieldId = activeFieldSortId.replace("field:", "");
       const overFieldId = overSortId.replace("field:", "");
-
       setRows((prev) => {
-        // Tìm nguồn và đích
         const srcInfo = findFieldInRows(prev, activeFieldId);
         const dstInfo = findFieldInRows(prev, overFieldId);
         if (!srcInfo || !dstInfo) return prev;
-
-        // Nếu cùng row → arrayMove trong row
         if (srcInfo.rowId === dstInfo.rowId) {
           return prev.map((row) => {
             if (row.id !== srcInfo.rowId) return row;
@@ -967,39 +798,16 @@ export default function App() {
             const newIdx = row.cells.findIndex((c) => c.field.id === overFieldId);
             if (oldIdx === -1 || newIdx === -1) return row;
             const newCells = arrayMove(row.cells, oldIdx, newIdx);
-            // Re-assign slots by position
             const slots: GridSlot[] = ["col0", "col1", "col2"];
             return { ...row, cells: newCells.map((c, i) => ({ ...c, slot: slots[i] })) };
           });
         }
-
-        // Khác row → hoán đổi vị trí giữa 2 field
         return prev.map((row) => {
           if (row.id === srcInfo.rowId) {
-            return {
-              ...row,
-              cells: row.cells.map((c) => {
-                if (c.field.id === activeFieldId) {
-                  const dstRow = prev.find((r) => r.id === dstInfo.rowId);
-                  const dstCell = dstRow?.cells.find((dc) => dc.field.id === overFieldId);
-                  return dstCell ? { ...c, field: dstCell.field } : c;
-                }
-                return c;
-              }),
-            };
+            return { ...row, cells: row.cells.map((c) => { if (c.field.id === activeFieldId) { const dstRow = prev.find((r) => r.id === dstInfo.rowId); const dstCell = dstRow?.cells.find((dc) => dc.field.id === overFieldId); return dstCell ? { ...c, field: dstCell.field } : c; } return c; }) };
           }
           if (row.id === dstInfo.rowId) {
-            return {
-              ...row,
-              cells: row.cells.map((c) => {
-                if (c.field.id === overFieldId) {
-                  const srcRow = prev.find((r) => r.id === srcInfo.rowId);
-                  const srcCell = srcRow?.cells.find((sc) => sc.field.id === activeFieldId);
-                  return srcCell ? { ...c, field: srcCell.field } : c;
-                }
-                return c;
-              }),
-            };
+            return { ...row, cells: row.cells.map((c) => { if (c.field.id === overFieldId) { const srcRow = prev.find((r) => r.id === srcInfo.rowId); const srcCell = srcRow?.cells.find((sc) => sc.field.id === activeFieldId); return srcCell ? { ...c, field: srcCell.field } : c; } return c; }) };
           }
           return row;
         });
@@ -1007,7 +815,6 @@ export default function App() {
       return;
     }
 
-    // ── Drop từ sidebar ──────────────────────────────────────────────────────
     if (data?.kind === "sidebar") {
       const overId = over.id as string;
       const parsed = parseDropId(overId);
@@ -1015,56 +822,29 @@ export default function App() {
       const { rowId, slot } = parsed;
       const type = data.type as FieldType;
       const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] }, createdAt: new Date().toISOString() };
-
       setRows((prev) => {
-        // Drop onto bottom zone → new row
         if (rowId === "new") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
-
         const targetRow = prev.find((r) => r.id === rowId);
         if (!targetRow) return prev;
-
         const isFull = targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
         const colCount = targetRow.cells.length;
-
-        // Dropping onto a "full" cell of a full-row → new row
         if (slot === "full") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
-
         if (isFull) {
-          // Split full → 2 cols. New field goes into dropped slot position.
           const existingCell = targetRow.cells[0];
-          if (slot === "col0") {
-            // new on left, existing on right
-            return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: newField, slot: "col0" }, { field: existingCell.field, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
-          } else {
-            // col1 or col2: new on right, existing on left
-            return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: existingCell.field, slot: "col0" }, { field: newField, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
-          }
+          if (slot === "col0") return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: newField, slot: "col0" }, { field: existingCell.field, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
+          else return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: existingCell.field, slot: "col0" }, { field: newField, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
         }
-
-        // Row already has 2 or 3 cols
-        if (colCount >= 3) {
-          // Already full → new row
-          return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
-        }
-
-        // colCount === 2: add a third column at the dropped position
-        const existingCells = [...targetRow.cells]; // col0, col1
-        // Determine insert index based on slot
+        if (colCount >= 3) return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
+        const existingCells = [...targetRow.cells];
         const insertIdx = slot === "col0" ? 0 : slot === "col1" ? 1 : 2;
-        // Build new 3-cell array by inserting at insertIdx
         const newCells: RowField[] = [];
         const allSlots: GridSlot[] = ["col0", "col1", "col2"];
         let srcIdx = 0;
         for (let i = 0; i < 3; i++) {
-          if (i === insertIdx) {
-            newCells.push({ field: newField, slot: allSlots[i] });
-          } else {
-            // remap existing cell to new slot
-            const ec = existingCells[srcIdx++];
-            newCells.push({ ...ec, slot: allSlots[i] });
-          }
+          if (i === insertIdx) newCells.push({ field: newField, slot: allSlots[i] });
+          else { const ec = existingCells[srcIdx++]; newCells.push({ ...ec, slot: allSlots[i] }); }
         }
-        return prev.map((r) => r.id === rowId ? { ...r, cells: newCells, colWidths: [1/3, 1/3, 1/3] } : r);
+        return prev.map((r) => r.id === rowId ? { ...r, cells: newCells, colWidths: [1 / 3, 1 / 3, 1 / 3] } : r);
       });
       setSelectedId(newField.id);
     }
@@ -1083,39 +863,96 @@ export default function App() {
     setRows((prev) => prev.map((r) => r.id === rowId ? { ...r, colWidths: newWidths } : r));
   }, []);
 
-  // Ghost preview khi drag field
   const draggingField = activeItem?.kind === "row"
     ? rows.flatMap((r) => r.cells).find((c) => c.field.id === (activeItem as { kind: "row"; rowId: string }).rowId)?.field
     : null;
 
+  if (!isOpen) return null;
+
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f0f2f5", color: "#1e293b", fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", overflow: "hidden" }}>
-        <Header rows={rows} />
-        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          <ComponentSidebar search={search} onSearchChange={setSearch} />
-          <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} onResizeRow={handleResizeRow} onDeselect={() => setSelectedId(null)} />
-          <div style={{ width: 200, background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflowY: "auto", flexShrink: 0 }}>
-            <PropertiesPanel field={selectedField} onChange={updateFieldProps} />
+    <>
+      {/* Backdrop */}
+      {!isMinimized && (
+        <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", zIndex: 999, backdropFilter: "blur(2px)", animation: "fbFadeIn 0.18s ease" }} />
+      )}
+
+      {/* Modal window */}
+      <div style={{
+        position: "fixed", left: pos.x, top: pos.y,
+        width: "calc(100vw - 160px)", maxWidth: 1400,
+        height: isMinimized ? 48 : "calc(100vh - 120px)",
+        zIndex: 1000, display: "flex", flexDirection: "column",
+        borderRadius: isMinimized ? 10 : 12,
+        boxShadow: "0 32px 80px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08)",
+        overflow: "hidden", background: "#f0f2f5",
+        fontFamily: "'IBM Plex Sans','Segoe UI',sans-serif", color: "#1e293b",
+        transition: "height 0.22s cubic-bezier(0.4,0,0.2,1), border-radius 0.22s",
+        animation: "fbSlideDown 0.2s cubic-bezier(0.4,0,0.2,1)",
+      }}>
+        {/* Titlebar */}
+        <div onMouseDown={onHeaderMouseDown} style={{
+          height: 48, background: "#ffffff",
+          borderBottom: isMinimized ? "none" : "1px solid #e2e8f0",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 16px 0 20px", flexShrink: 0, cursor: "grab", userSelect: "none",
+        }}>
+          {/* Trái */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", gap: 6, marginRight: 2 }}>
+              <button onClick={onClose} title="Đóng"
+                style={{ width: 13, height: 13, borderRadius: "50%", background: "#ff5f57", border: "none", cursor: "pointer", padding: 0 }}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.75")}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+              />
+              <button onClick={() => setIsMinimized((v) => !v)} title={isMinimized ? "Mở rộng" : "Thu nhỏ"}
+                style={{ width: 13, height: 13, borderRadius: "50%", background: "#febc2e", border: "none", cursor: "pointer", padding: 0 }}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.75")}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+              />
+              <div style={{ width: 13, height: 13, borderRadius: "50%", background: "#28c840" }} />
+            </div>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", letterSpacing: "0.02em" }}>Form Builder</span>
+            {fieldCount > 0 && (
+              <span style={{ fontSize: 11, color: "#64748b", background: "#f1f5f9", padding: "2px 8px", borderRadius: 99, border: "1px solid #e2e8f0" }}>
+                {fieldCount} field{fieldCount !== 1 ? "s" : ""}
+              </span>
+            )}
           </div>
+          {/* Phải: export buttons */}
+          {!isMinimized && <HeaderButtons rows={rows} />}
         </div>
+
+        {/* Body */}
+        {!isMinimized && (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
+            <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+              <ComponentSidebar search={search} onSearchChange={setSearch} />
+              <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} onResizeRow={handleResizeRow} onDeselect={() => setSelectedId(null)} />
+              <div style={{ width: 200, background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflowY: "auto", flexShrink: 0 }}>
+                <PropertiesPanel field={selectedField} onChange={updateFieldProps} />
+              </div>
+            </div>
+            <DragOverlay dropAnimation={{ duration: 160, easing: "ease" }}>
+              {isDraggingFromSidebar && (
+                <div style={{ background: "#eff6ff", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "7px 12px", color: "#2563eb", fontSize: 13, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
+                  {(activeItem as { kind: "sidebar"; label: string }).label}
+                </div>
+              )}
+              {draggingField && (
+                <div style={{ background: "#fafafa", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "10px 14px", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", pointerEvents: "none", opacity: 0.9, minWidth: 180 }}>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{draggingField.props.label}</div>
+                  <div style={{ height: 28, background: "#f5f5f5", borderRadius: 4, border: "1px solid #d1d5db" }} />
+                </div>
+              )}
+            </DragOverlay>
+          </DndContext>
+        )}
       </div>
 
-      <DragOverlay dropAnimation={{ duration: 160, easing: "ease" }}>
-        {/* Sidebar drag overlay */}
-        {isDraggingFromSidebar && (
-          <div style={{ background: "#eff6ff", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "7px 12px", color: "#2563eb", fontSize: 13, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
-            {(activeItem as { kind: "sidebar"; label: string }).label}
-          </div>
-        )}
-        {/* Field drag overlay */}
-        {draggingField && (
-          <div style={{ background: "#fafafa", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "10px 14px", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", pointerEvents: "none", opacity: 0.9, minWidth: 180 }}>
-            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 6 }}>{draggingField.props.label}</div>
-            <div style={{ height: 28, background: "#f5f5f5", borderRadius: 4, border: "1px solid #d1d5db" }} />
-          </div>
-        )}
-      </DragOverlay>
-    </DndContext>
+      <style>{`
+        @keyframes fbFadeIn { from { opacity:0 } to { opacity:1 } }
+        @keyframes fbSlideDown { from { opacity:0; transform:translateY(-10px) scale(0.98) } to { opacity:1; transform:translateY(0) scale(1) } }
+      `}</style>
+    </>
   );
 }
