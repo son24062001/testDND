@@ -204,7 +204,7 @@ function findFieldInRows(rows: Row[], fieldId: string): { rowId: string; slot: G
 }
 
 // ─── Schema Generator ─────────────────────────────────────────────────────────
-function generateSchemaContent(rows: Row[]): string {
+function generateSchemaJSON(rows: Row[]): string {
   const allFields = rows.flatMap((row) => row.cells.map((cell) => cell.field));
   const fieldType2Component: Record<FieldType, string> = {
     text: "Input", number: "NumberPicker", decimal: "NumberPicker",
@@ -221,36 +221,32 @@ function generateSchemaContent(rows: Row[]): string {
     radio: "string", switch: "boolean", slider: "number",
     checkbox: "boolean", checkboxgroup: "array", select: "string",
   };
-  const schemaFields = allFields.map((f) => {
-    const component = fieldType2Component[f.type];
-    const dataType = fieldType2DataType[f.type];
-    const placeholder = f.props.placeholder ? `\n        "placeholder": ${JSON.stringify(f.props.placeholder)},` : "";
-    return `    "${f.id}": {
-      "type": "${dataType}",
-      "title": ${JSON.stringify(f.props.label)},
+  const properties: Record<string, object> = {};
+  allFields.forEach((f, idx) => {
+    properties[f.id] = {
+      type: fieldType2DataType[f.type],
+      title: f.props.label,
       "x-decorator": "FormItem",
-      "x-component": "${component}",
-      "x-component-props": {${placeholder}
+      "x-component": fieldType2Component[f.type],
+      "x-component-props": f.props.placeholder ? { placeholder: f.props.placeholder } : {},
+      "x-decorator-props": { layout: "vertical", labelAlign: "left" },
+      required: f.props.required,
+      name: f.id,
+      "x-designable-id": f.id,
+      "x-index": idx,
+    };
+  });
+  const schema = {
+    type: "object",
+    properties: {
+      root: {
+        type: "void",
+        "x-component": "FormLayout",
+        properties,
       },
-      "x-decorator-props": { "layout": "vertical", "labelAlign": "left" },
-      "required": ${f.props.required},
-      "name": "${f.id}",
-      "x-designable-id": "${f.id}",
-      "x-index": ${allFields.indexOf(f)}
-    }`;
-  }).join(",\n");
-  const exportedAt = new Date().toLocaleString("vi-VN");
-  return `import { ISchema } from "@formily/react";\n\n// Schema exported at: ${exportedAt}\n// Total fields: ${allFields.length}\n\nexport const schema: ISchema = {\n  "type": "object",\n  "properties": {\n    "root": {\n      "type": "void",\n      "x-component": "FormLayout",\n      "properties": {\n${schemaFields}\n      }\n    }\n  }\n};\n`;
-}
-
-function downloadSchemaFile(rows: Row[]) {
-  const content = generateSchemaContent(rows);
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = "schema.ts";
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
+    },
+  };
+  return JSON.stringify(schema, null, 2);
 }
 
 // ─── Icon ─────────────────────────────────────────────────────────────────────
@@ -672,24 +668,18 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
 }
 
 // ─── HeaderButtons — chỉ phần buttons, dùng trong titlebar modal ──────────────
-function HeaderButtons({ rows }: { rows: Row[] }) {
+function HeaderButtons({ rows, onExport }: { rows: Row[]; onExport?: (json: string) => void }) {
   const hasFields = rows.some((r) => r.cells.length > 0);
   const [clicked, setClicked] = useState(false);
   const handleExport = () => {
     if (!hasFields) return;
-    downloadSchemaFile(rows);
+    const json = generateSchemaJSON(rows);
+    onExport?.(json);
     setClicked(true);
     setTimeout(() => setClicked(false), 1500);
   };
   return (
     <div style={{ display: "flex", gap: 8 }}>
-      <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500, background: "transparent", border: "1px solid #2a3a55", color: "#475569", cursor: "default" }}>
-        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-        </svg>
-        Copy schema
-      </button>
       <button onClick={handleExport} disabled={!hasFields}
         style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500, background: hasFields ? (clicked ? "#2563eb" : "#3b82f6") : "#e8edf3", border: hasFields ? "1px solid #2563eb" : "1px solid #1e2d42", color: hasFields ? "#fff" : "#94a3b8", cursor: hasFields ? "pointer" : "not-allowed", transition: "all 0.2s" }}
         onMouseEnter={(e) => { if (hasFields && !clicked) (e.currentTarget as HTMLButtonElement).style.background = "#2563eb"; }}
@@ -710,15 +700,17 @@ function HeaderButtons({ rows }: { rows: Row[] }) {
 interface FormBuilderModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onExport?: (json: string) => void;
 }
 
-export function FormBuilderModal({ isOpen, onClose }: FormBuilderModalProps) {
+export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModalProps) {
   const [rows, setRows] = useState<Row[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<ActiveItemKind | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [search, setSearch] = useState<string>("");
-  const [isMinimized, setIsMinimized] = useState(false);
+  // const [isMinimized, setIsMinimized] = useState(false);
+  const isMinimized = false; // Tạm thời bỏ tính năng minimize để tập trung hoàn thiện drag-drop và properties panel
 
   // ── Drag-to-move modal ────────────────────────────────────────────────────────
   const [pos, setPos] = useState({ x: 80, y: 60 });
@@ -732,6 +724,17 @@ export function FormBuilderModal({ isOpen, onClose }: FormBuilderModalProps) {
     e.preventDefault();
   };
 
+  useEffect(() => {
+      if (isOpen) {
+        const originalPointerEvents = document.body.style.pointerEvents;
+        document.body.style.pointerEvents = "auto";
+        return () => {
+          document.body.style.pointerEvents = originalPointerEvents;
+        };
+      }
+    }, [isOpen]);
+
+  
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (!draggingModal.current) return;
@@ -749,7 +752,6 @@ export function FormBuilderModal({ isOpen, onClose }: FormBuilderModalProps) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const selectedField: Field | null = rows.flatMap((r) => r.cells.map((c) => c.field)).find((f) => f.id === selectedId) ?? null;
   const fieldCount = rows.flatMap((r) => r.cells).length;
-
   const handleDragStart = (event: DragStartEvent) => {
     const data = event.active.data.current as Record<string, unknown> | undefined;
     if (!data) return;
@@ -898,28 +900,16 @@ export function FormBuilderModal({ isOpen, onClose }: FormBuilderModalProps) {
         }}>
           {/* Trái */}
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ display: "flex", gap: 6, marginRight: 2 }}>
-              <button onClick={onClose} title="Đóng"
-                style={{ width: 13, height: 13, borderRadius: "50%", background: "#ff5f57", border: "none", cursor: "pointer", padding: 0 }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.75")}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
-              />
-              <button onClick={() => setIsMinimized((v) => !v)} title={isMinimized ? "Mở rộng" : "Thu nhỏ"}
-                style={{ width: 13, height: 13, borderRadius: "50%", background: "#febc2e", border: "none", cursor: "pointer", padding: 0 }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.75")}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
-              />
-              <div style={{ width: 13, height: 13, borderRadius: "50%", background: "#28c840" }} />
-            </div>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", letterSpacing: "0.02em" }}>Form Builder</span>
+            <span style={{ fontSize: 15, fontWeight: 600,}}>Form Builder</span>
             {fieldCount > 0 && (
               <span style={{ fontSize: 11, color: "#64748b", background: "#f1f5f9", padding: "2px 8px", borderRadius: 99, border: "1px solid #e2e8f0" }}>
                 {fieldCount} field{fieldCount !== 1 ? "s" : ""}
               </span>
             )}
           </div>
+            
           {/* Phải: export buttons */}
-          {!isMinimized && <HeaderButtons rows={rows} />}
+          {!isMinimized && <HeaderButtons rows={rows} onExport={onExport} />}
         </div>
 
         {/* Body */}
