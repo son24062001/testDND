@@ -674,6 +674,17 @@ function FieldsetCardBlock({ fieldset, selectedId, dropTarget, isDraggingFromSid
 }) {
   const [editing, setEditing] = useState(false);
   const [titleVal, setTitleVal] = useState(fieldset.title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!editing) setTitleVal(fieldset.title);
+  }, [fieldset.title, editing]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
   const allFieldSortableIds = fieldset.rows.flatMap((row) => row.cells.map((c) => `field:${c.field.id}`));
   const { isOver, setNodeRef } = useDroppable({ id: `fieldset:${fieldset.id}:new:full` });
 
@@ -696,20 +707,34 @@ function FieldsetCardBlock({ fieldset, selectedId, dropTarget, isDraggingFromSid
           <Icon d={icons.fieldset} size={14} color="#7c3aed" />
           {editing ? (
             <input
+              ref={inputRef}
               autoFocus
               value={titleVal}
               onChange={(e) => setTitleVal(e.target.value)}
-              onBlur={() => { setEditing(false); onRenameFieldset(fieldset.id, titleVal || "Fieldset"); }}
-              onKeyDown={(e) => { if (e.key === "Enter") { setEditing(false); onRenameFieldset(fieldset.id, titleVal || "Fieldset"); } }}
-              style={{ fontSize: 13, fontWeight: 600, color: "#5b21b6", background: "transparent", border: "none", borderBottom: "1.5px solid #7c3aed", outline: "none", padding: "0 2px", minWidth: 80 }}
+              onBlur={() => { setEditing(false); onRenameFieldset(fieldset.id, titleVal.trim() || "Fieldset"); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { setEditing(false); onRenameFieldset(fieldset.id, titleVal.trim() || "Fieldset"); }
+                if (e.key === "Escape") { setEditing(false); setTitleVal(fieldset.title); }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontSize: 13, fontWeight: 600, color: "#5b21b6", background: "#fff", border: "1.5px solid #7c3aed", borderRadius: 4, outline: "none", padding: "2px 6px", minWidth: 80, maxWidth: 240 }}
             />
           ) : (
             <span
-              style={{ fontSize: 13, fontWeight: 600, color: "#5b21b6", cursor: "text" }}
+              style={{ fontSize: 13, fontWeight: 600, color: "#5b21b6", cursor: "text", display: "flex", alignItems: "center", gap: 5 }}
               onDoubleClick={() => setEditing(true)}
-              title="Double-click to rename"
+              title="Double-click để đổi tên"
             >
               {fieldset.title}
+              <span
+                onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+                title="Đổi tên"
+                style={{ opacity: 0.45, cursor: "pointer", display: "flex", alignItems: "center" }}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.45")}
+              >
+                <Icon d={icons.edit} size={12} color="#7c3aed" />
+              </span>
             </span>
           )}
         </div>
