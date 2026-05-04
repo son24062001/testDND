@@ -56,6 +56,7 @@ interface SidebarGroup {
 
 type ActiveItemKind =
   | { kind: "sidebar"; type: FieldType; label: string }
+  | { kind: "sidebar-fieldset" }
   | { kind: "row"; rowId: string };
 
 type GridSlot = "full" | "col0" | "col1" | "col2";
@@ -76,11 +77,21 @@ interface DropTarget {
   slot: GridSlot;
 }
 
+interface Fieldset {
+  id: string;
+  title: string;
+  rows: Row[];
+}
+
+type CanvasItem =
+  | { kind: "row"; row: Row }
+  | { kind: "fieldset"; fieldset: Fieldset };
+
 type IconName =
   | "text" | "number" | "decimal" | "date" | "multiline" | "richtext"
   | "password" | "attachment" | "textlist" | "email" | "radio" | "switch"
   | "slider" | "checkbox" | "checkboxgroup" | "select"
-  | "grip" | "trash" | "eye" | "settings" | "plus" | "search" | "edit" | "chevronDown";
+  | "grip" | "trash" | "eye" | "settings" | "plus" | "search" | "edit" | "chevronDown" | "fieldset";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const icons: Record<IconName, string> = {
@@ -108,6 +119,7 @@ const icons: Record<IconName, string> = {
   search: "M21 21l-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
   edit: "M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z",
   chevronDown: "M6 9l6 6 6-6",
+  fieldset: "M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5zM3 10h18",
 };
 
 const SIDEBAR_GROUPS: SidebarGroup[] = [
@@ -161,8 +173,10 @@ const defaultProps: Record<FieldType, FieldProps> = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 let fieldCounter = 1;
 let rowCounter = 1;
+let fieldsetCounter = 1;
 function newFieldId() { return `field_${fieldCounter++}`; }
 function newRowId() { return `row_${rowCounter++}`; }
+function newFieldsetId() { return `fieldset_${fieldsetCounter++}`; }
 
 function removeField(rows: Row[], fieldId: string): Row[] {
   return rows
@@ -250,10 +264,10 @@ function generateSchemaJSON(rows: Row[]): string {
 }
 
 // ─── Icon ─────────────────────────────────────────────────────────────────────
-function Icon({ d, size = 14 }: { d: string; size?: number }) {
+function Icon({ d, size = 14, color }: { d: string; size?: number; color?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      stroke={color || "currentColor"} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d={d} />
     </svg>
   );
@@ -338,6 +352,24 @@ function renderField(type: FieldType, props: FieldProps): JSX.Element {
   }
 }
 
+// ─── SidebarFieldsetItem ──────────────────────────────────────────────────────
+function SidebarFieldsetItem() {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "sidebar-fieldset",
+    data: { kind: "sidebar-fieldset" },
+  });
+  return (
+    <div ref={setNodeRef} {...listeners} {...attributes}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 5, cursor: "grab", color: isDragging ? "#7c3aed" : "#475569", background: isDragging ? "#ede9fe" : "transparent", fontSize: 13, userSelect: "none", transition: "all 0.15s", opacity: isDragging ? 0.5 : 1 }}
+      onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.background = "#f0f4f8"; e.currentTarget.style.color = "#1e293b"; }}
+      onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => { e.currentTarget.style.background = isDragging ? "#ede9fe" : "transparent"; e.currentTarget.style.color = isDragging ? "#7c3aed" : "#475569"; }}
+    >
+      <Icon d={icons.fieldset} size={14} />
+      Fieldset Card
+    </div>
+  );
+}
+
 // ─── SidebarItem ──────────────────────────────────────────────────────────────
 function SidebarItem({ item }: { item: SidebarItemData }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -359,6 +391,7 @@ function SidebarItem({ item }: { item: SidebarItemData }) {
 // ─── ComponentSidebar ─────────────────────────────────────────────────────────
 function ComponentSidebar({ search, onSearchChange }: { search: string; onSearchChange: (v: string) => void }) {
   const filteredGroups = SIDEBAR_GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => i.label.toLowerCase().includes(search.toLowerCase())) })).filter((g) => g.items.length > 0);
+  const showLayout = !search || "fieldset card".includes(search.toLowerCase());
   return (
     <div style={{ width: 150, background: "#ffffff", borderRight: "1px solid #e2e8f0", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
       <div style={{ padding: "10px 10px 6px" }}>
@@ -367,6 +400,12 @@ function ComponentSidebar({ search, onSearchChange }: { search: string; onSearch
           <input value={search} onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSearchChange(e.target.value)} placeholder="Search" style={{ background: "transparent", border: "none", color: "#1e293b", fontSize: 13, outline: "none", width: "100%" }} />
         </div>
       </div>
+      {showLayout && (
+        <div>
+          <div style={{ padding: "10px 10px 4px", fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em" }}>Layout</div>
+          <SidebarFieldsetItem />
+        </div>
+      )}
       {filteredGroups.map((group) => (
         <div key={group.label}>
           <div style={{ padding: "10px 10px 4px", fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.07em" }}>{group.label}</div>
@@ -621,6 +660,96 @@ function GridRow({ row, selectedId, dropTarget, isDraggingFromSidebar, onSelectF
   );
 }
 
+// ─── FieldsetCardBlock ────────────────────────────────────────────────────────
+function FieldsetCardBlock({ fieldset, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField, onResizeRow, onDeleteFieldset, onRenameFieldset }: {
+  fieldset: Fieldset;
+  selectedId: string | null;
+  dropTarget: DropTarget | null;
+  isDraggingFromSidebar: boolean;
+  onSelectField: (id: string) => void;
+  onDeleteField: (id: string) => void;
+  onResizeRow: (rowId: string, newWidths: number[]) => void;
+  onDeleteFieldset: (id: string) => void;
+  onRenameFieldset: (id: string, title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [titleVal, setTitleVal] = useState(fieldset.title);
+  const allFieldSortableIds = fieldset.rows.flatMap((row) => row.cells.map((c) => `field:${c.field.id}`));
+  const { isOver, setNodeRef } = useDroppable({ id: `fieldset:${fieldset.id}:new:full` });
+
+  return (
+    <div style={{
+      border: "1.5px solid #c4b5fd",
+      borderRadius: 10,
+      background: "#faf5ff",
+      marginBottom: 10,
+      overflow: "hidden",
+    }}>
+      {/* Fieldset header */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "8px 12px",
+        background: "#ede9fe",
+        borderBottom: "1px solid #c4b5fd",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+          <Icon d={icons.fieldset} size={14} color="#7c3aed" />
+          {editing ? (
+            <input
+              autoFocus
+              value={titleVal}
+              onChange={(e) => setTitleVal(e.target.value)}
+              onBlur={() => { setEditing(false); onRenameFieldset(fieldset.id, titleVal || "Fieldset"); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { setEditing(false); onRenameFieldset(fieldset.id, titleVal || "Fieldset"); } }}
+              style={{ fontSize: 13, fontWeight: 600, color: "#5b21b6", background: "transparent", border: "none", borderBottom: "1.5px solid #7c3aed", outline: "none", padding: "0 2px", minWidth: 80 }}
+            />
+          ) : (
+            <span
+              style={{ fontSize: 13, fontWeight: 600, color: "#5b21b6", cursor: "text" }}
+              onDoubleClick={() => setEditing(true)}
+              title="Double-click to rename"
+            >
+              {fieldset.title}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => onDeleteFieldset(fieldset.id)}
+          style={{ background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 4, color: "#ef4444", cursor: "pointer", padding: "3px 5px", display: "flex", alignItems: "center" }}
+          title="Xóa fieldset"
+        >
+          <Icon d={icons.trash} size={12} />
+        </button>
+      </div>
+
+      {/* Fieldset body — droppable area */}
+      <div style={{ padding: "10px" }}>
+        <SortableContext items={allFieldSortableIds} strategy={rectSortingStrategy}>
+          {fieldset.rows.map((row) => (
+            <GridRow key={row.id} row={row} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} onResizeRow={onResizeRow} />
+          ))}
+        </SortableContext>
+        {/* Bottom drop zone inside fieldset */}
+        <div ref={setNodeRef} style={{
+          minHeight: fieldset.rows.length === 0 ? 72 : 36,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          borderRadius: 8,
+          border: `2px dashed ${isOver ? "#7c3aed" : "#c4b5fd"}`,
+          background: isOver ? "rgba(124,58,237,0.05)" : "transparent",
+          transition: "all 0.2s",
+          marginTop: fieldset.rows.length > 0 ? 4 : 0,
+        }}>
+          <div style={{ fontSize: 12, color: isOver ? "#7c3aed" : "#a78bfa" }}>
+            {fieldset.rows.length === 0
+              ? (isOver ? "Thả vào đây" : "🗂 Thả field vào nhóm này")
+              : (isOver ? "Thêm vào nhóm" : "+ Thả để thêm field")}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── BottomDropZone ───────────────────────────────────────────────────────────
 function BottomDropZone({ isEmpty, isDraggingFromSidebar }: { isEmpty: boolean; isDraggingFromSidebar: boolean }) {
   const { isOver, setNodeRef } = useDroppable({ id: "canvas:new:full" });
@@ -641,14 +770,18 @@ function BottomDropZone({ isEmpty, isDraggingFromSidebar }: { isEmpty: boolean; 
 }
 
 // ─── FormCanvas ───────────────────────────────────────────────────────────────
-function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField, onResizeRow, onDeselect }: {
-  rows: Row[]; selectedId: string | null; dropTarget: DropTarget | null;
+function FormCanvas({ canvasItems, selectedId, dropTarget, isDraggingFromSidebar, onSelectField, onDeleteField, onResizeRow, onDeleteFieldset, onRenameFieldset, onDeselect }: {
+  canvasItems: CanvasItem[]; selectedId: string | null; dropTarget: DropTarget | null;
   isDraggingFromSidebar: boolean;
   onSelectField: (id: string) => void; onDeleteField: (id: string) => void;
   onResizeRow: (rowId: string, newWidths: number[]) => void;
+  onDeleteFieldset: (id: string) => void;
+  onRenameFieldset: (id: string, title: string) => void;
   onDeselect: () => void;
 }) {
-  const allFieldSortableIds = rows.flatMap((row) => row.cells.map((c) => `field:${c.field.id}`));
+  const allRows = canvasItems.flatMap((item) => item.kind === "row" ? [item.row] : item.fieldset.rows);
+  const allFieldSortableIds = allRows.flatMap((row) => row.cells.map((c) => `field:${c.field.id}`));
+  const isEmpty = canvasItems.length === 0;
   return (
     <div style={{ flex: 1, overflowY: "auto", background: "#f0f2f5", padding: "15px" }}
       onClick={(e: React.MouseEvent<HTMLDivElement>) => { if (e.target === e.currentTarget) onDeselect(); }}>
@@ -656,11 +789,15 @@ function FormCanvas({ rows, selectedId, dropTarget, isDraggingFromSidebar, onSel
         <div style={{ background: "#fafafa", borderRadius: 10, border: "1px solid #e2e8f0", padding: "15px", minHeight: 500 }}
           onClick={(e: React.MouseEvent<HTMLDivElement>) => { if (e.target === e.currentTarget) onDeselect(); }}>
           <SortableContext items={allFieldSortableIds} strategy={rectSortingStrategy}>
-            {rows.map((row) => (
-              <GridRow key={row.id} row={row} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} onResizeRow={onResizeRow} />
-            ))}
+            {canvasItems.map((item) => {
+              if (item.kind === "row") {
+                return <GridRow key={item.row.id} row={item.row} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} onResizeRow={onResizeRow} />;
+              } else {
+                return <FieldsetCardBlock key={item.fieldset.id} fieldset={item.fieldset} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={onSelectField} onDeleteField={onDeleteField} onResizeRow={onResizeRow} onDeleteFieldset={onDeleteFieldset} onRenameFieldset={onRenameFieldset} />;
+              }
+            })}
           </SortableContext>
-          <BottomDropZone isEmpty={rows.length === 0} isDraggingFromSidebar={isDraggingFromSidebar} />
+          <BottomDropZone isEmpty={isEmpty} isDraggingFromSidebar={isDraggingFromSidebar} />
         </div>
       </div>
     </div>
@@ -704,13 +841,50 @@ interface FormBuilderModalProps {
 }
 
 export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModalProps) {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [canvasItems, setCanvasItems] = useState<CanvasItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeItem, setActiveItem] = useState<ActiveItemKind | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [search, setSearch] = useState<string>("");
   // const [isMinimized, setIsMinimized] = useState(false);
   const isMinimized = false; // Tạm thời bỏ tính năng minimize để tập trung hoàn thiện drag-drop và properties panel
+
+  // Helper: get all rows (flat) from canvasItems
+  const allRows = canvasItems.flatMap((item) => item.kind === "row" ? [item.row] : item.fieldset.rows);
+
+  // Helper: find which container a rowId belongs to
+  const findRowContainer = (rowId: string): { kind: "canvas" } | { kind: "fieldset"; fieldsetId: string } | null => {
+    for (const item of canvasItems) {
+      if (item.kind === "row" && item.row.id === rowId) return { kind: "canvas" };
+      if (item.kind === "fieldset") {
+        if (item.fieldset.rows.some(r => r.id === rowId)) return { kind: "fieldset", fieldsetId: item.fieldset.id };
+      }
+    }
+    return null;
+  };
+
+  const addRowToContainer = (newRow: Row, targetContainer: { kind: "canvas" } | { kind: "fieldset"; fieldsetId: string }) => {
+    if (targetContainer.kind === "canvas") {
+      setCanvasItems((prev) => [...prev, { kind: "row", row: newRow }]);
+    } else {
+      setCanvasItems((prev) => prev.map((item) => {
+        if (item.kind === "fieldset" && item.fieldset.id === targetContainer.fieldsetId) {
+          return { ...item, fieldset: { ...item.fieldset, rows: [...item.fieldset.rows, newRow] } };
+        }
+        return item;
+      }));
+    }
+  };
+
+  const updateRowInItems = (rowId: string, updater: (row: Row) => Row) => {
+    setCanvasItems((prev) => prev.map((item) => {
+      if (item.kind === "row" && item.row.id === rowId) return { ...item, row: updater(item.row) };
+      if (item.kind === "fieldset") {
+        return { ...item, fieldset: { ...item.fieldset, rows: item.fieldset.rows.map((r) => r.id === rowId ? updater(r) : r) } };
+      }
+      return item;
+    }));
+  };
 
   // ── Drag-to-move modal ────────────────────────────────────────────────────────
   const [pos, setPos] = useState({ x: 80, y: 60 });
@@ -748,14 +922,15 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
     return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
   }, []);
 
-  const isDraggingFromSidebar = activeItem?.kind === "sidebar";
+  const isDraggingFromSidebar = activeItem?.kind === "sidebar" || activeItem?.kind === "sidebar-fieldset";
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const selectedField: Field | null = rows.flatMap((r) => r.cells.map((c) => c.field)).find((f) => f.id === selectedId) ?? null;
-  const fieldCount = rows.flatMap((r) => r.cells).length;
+  const selectedField: Field | null = allRows.flatMap((r) => r.cells.map((c) => c.field)).find((f) => f.id === selectedId) ?? null;
+  const fieldCount = allRows.flatMap((r) => r.cells).length;
   const handleDragStart = (event: DragStartEvent) => {
     const data = event.active.data.current as Record<string, unknown> | undefined;
     if (!data) return;
     if (data.kind === "sidebar") setActiveItem({ kind: "sidebar", type: data.type as FieldType, label: data.label as string });
+    else if (data.kind === "sidebar-fieldset") setActiveItem({ kind: "sidebar-fieldset" });
     else if (data.kind === "field") setActiveItem({ kind: "row", rowId: data.fieldId as string });
   };
 
@@ -771,7 +946,7 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
     }
     if (data?.kind === "field") {
       const overFieldId = (overId as string).replace("field:", "");
-      const dstInfo = findFieldInRows(rows, overFieldId);
+      const dstInfo = findFieldInRows(allRows, overFieldId);
       if (dstInfo) setDropTarget({ rowId: dstInfo.rowId, slot: dstInfo.slot });
       else setDropTarget(null);
     }
@@ -783,60 +958,98 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
     setActiveItem(null); setDropTarget(null);
     if (!over) return;
 
+    // Dropped a fieldset from sidebar
+    if (data?.kind === "sidebar-fieldset") {
+      const newFieldset: Fieldset = { id: newFieldsetId(), title: "Thông tin", rows: [] };
+      setCanvasItems((prev) => [...prev, { kind: "fieldset", fieldset: newFieldset }]);
+      return;
+    }
+
     if (data?.kind === "field") {
       const activeFieldSortId = active.id as string;
       const overSortId = over.id as string;
       if (activeFieldSortId === overSortId) return;
       const activeFieldId = activeFieldSortId.replace("field:", "");
       const overFieldId = overSortId.replace("field:", "");
-      setRows((prev) => {
-        const srcInfo = findFieldInRows(prev, activeFieldId);
-        const dstInfo = findFieldInRows(prev, overFieldId);
-        if (!srcInfo || !dstInfo) return prev;
-        if (srcInfo.rowId === dstInfo.rowId) {
-          return prev.map((row) => {
-            if (row.id !== srcInfo.rowId) return row;
-            const oldIdx = row.cells.findIndex((c) => c.field.id === activeFieldId);
-            const newIdx = row.cells.findIndex((c) => c.field.id === overFieldId);
-            if (oldIdx === -1 || newIdx === -1) return row;
-            const newCells = arrayMove(row.cells, oldIdx, newIdx);
-            const slots: GridSlot[] = ["col0", "col1", "col2"];
-            return { ...row, cells: newCells.map((c, i) => ({ ...c, slot: slots[i] })) };
-          });
-        }
-        return prev.map((row) => {
-          if (row.id === srcInfo.rowId) {
-            return { ...row, cells: row.cells.map((c) => { if (c.field.id === activeFieldId) { const dstRow = prev.find((r) => r.id === dstInfo.rowId); const dstCell = dstRow?.cells.find((dc) => dc.field.id === overFieldId); return dstCell ? { ...c, field: dstCell.field } : c; } return c; }) };
-          }
-          if (row.id === dstInfo.rowId) {
-            return { ...row, cells: row.cells.map((c) => { if (c.field.id === overFieldId) { const srcRow = prev.find((r) => r.id === srcInfo.rowId); const srcCell = srcRow?.cells.find((sc) => sc.field.id === activeFieldId); return srcCell ? { ...c, field: srcCell.field } : c; } return c; }) };
-          }
-          return row;
+      const srcInfo = findFieldInRows(allRows, activeFieldId);
+      const dstInfo = findFieldInRows(allRows, overFieldId);
+      if (!srcInfo || !dstInfo) return;
+      if (srcInfo.rowId === dstInfo.rowId) {
+        updateRowInItems(srcInfo.rowId, (row) => {
+          const oldIdx = row.cells.findIndex((c) => c.field.id === activeFieldId);
+          const newIdx = row.cells.findIndex((c) => c.field.id === overFieldId);
+          if (oldIdx === -1 || newIdx === -1) return row;
+          const newCells = arrayMove(row.cells, oldIdx, newIdx);
+          const slots: GridSlot[] = ["col0", "col1", "col2"];
+          return { ...row, cells: newCells.map((c, i) => ({ ...c, slot: slots[i] })) };
         });
-      });
+      } else {
+        // swap between rows
+        const srcRow = allRows.find(r => r.id === srcInfo.rowId);
+        const dstRow = allRows.find(r => r.id === dstInfo.rowId);
+        if (!srcRow || !dstRow) return;
+        const srcCell = srcRow.cells.find(c => c.field.id === activeFieldId);
+        const dstCell = dstRow.cells.find(c => c.field.id === overFieldId);
+        if (!srcCell || !dstCell) return;
+        updateRowInItems(srcInfo.rowId, (row) => ({ ...row, cells: row.cells.map((c) => c.field.id === activeFieldId ? { ...c, field: dstCell.field } : c) }));
+        updateRowInItems(dstInfo.rowId, (row) => ({ ...row, cells: row.cells.map((c) => c.field.id === overFieldId ? { ...c, field: srcCell.field } : c) }));
+      }
       return;
     }
 
     if (data?.kind === "sidebar") {
       const overId = over.id as string;
+      // Check if dropped into a fieldset drop zone
+      const fieldsetMatch = overId.match(/^fieldset:([^:]+):(.+):(.+)$/);
+      const type = data.type as FieldType;
+      const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] }, createdAt: new Date().toISOString() };
+
+      if (fieldsetMatch) {
+        const fieldsetId = fieldsetMatch[1];
+        const newRow: Row = { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] };
+        setCanvasItems((prev) => prev.map((item) => {
+          if (item.kind === "fieldset" && item.fieldset.id === fieldsetId) {
+            return { ...item, fieldset: { ...item.fieldset, rows: [...item.fieldset.rows, newRow] } };
+          }
+          return item;
+        }));
+        setSelectedId(newField.id);
+        return;
+      }
+
       const parsed = parseDropId(overId);
       if (!parsed) return;
       const { rowId, slot } = parsed;
-      const type = data.type as FieldType;
-      const newField: Field = { id: newFieldId(), type, props: { ...defaultProps[type] }, createdAt: new Date().toISOString() };
-      setRows((prev) => {
-        if (rowId === "new") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
-        const targetRow = prev.find((r) => r.id === rowId);
-        if (!targetRow) return prev;
-        const isFull = targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
-        const colCount = targetRow.cells.length;
-        if (slot === "full") return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
-        if (isFull) {
-          const existingCell = targetRow.cells[0];
-          if (slot === "col0") return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: newField, slot: "col0" }, { field: existingCell.field, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
-          else return prev.map((r) => r.id === rowId ? { ...r, cells: [{ field: existingCell.field, slot: "col0" }, { field: newField, slot: "col1" }], colWidths: [0.5, 0.5] } : r);
-        }
-        if (colCount >= 3) return [...prev, { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }];
+
+      if (rowId === "new") {
+        setCanvasItems((prev) => [...prev, { kind: "row", row: { id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] } }]);
+        setSelectedId(newField.id);
+        return;
+      }
+
+      const targetRow = allRows.find((r) => r.id === rowId);
+      if (!targetRow) return;
+      const isFull = targetRow.cells.length === 1 && targetRow.cells[0].slot === "full";
+      const colCount = targetRow.cells.length;
+
+      let updatedRow: Row | null = null;
+
+      if (slot === "full") {
+        const container = findRowContainer(rowId);
+        if (container) addRowToContainer({ id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }, container);
+        setSelectedId(newField.id);
+        return;
+      }
+      if (isFull) {
+        const existingCell = targetRow.cells[0];
+        if (slot === "col0") updatedRow = { ...targetRow, cells: [{ field: newField, slot: "col0" }, { field: existingCell.field, slot: "col1" }], colWidths: [0.5, 0.5] };
+        else updatedRow = { ...targetRow, cells: [{ field: existingCell.field, slot: "col0" }, { field: newField, slot: "col1" }], colWidths: [0.5, 0.5] };
+      } else if (colCount >= 3) {
+        const container = findRowContainer(rowId);
+        if (container) addRowToContainer({ id: newRowId(), cells: [{ field: newField, slot: "full" }], colWidths: [1] }, container);
+        setSelectedId(newField.id);
+        return;
+      } else {
         const existingCells = [...targetRow.cells];
         const insertIdx = slot === "col0" ? 0 : slot === "col1" ? 1 : 2;
         const newCells: RowField[] = [];
@@ -846,27 +1059,55 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
           if (i === insertIdx) newCells.push({ field: newField, slot: allSlots[i] });
           else { const ec = existingCells[srcIdx++]; newCells.push({ ...ec, slot: allSlots[i] }); }
         }
-        return prev.map((r) => r.id === rowId ? { ...r, cells: newCells, colWidths: [1 / 3, 1 / 3, 1 / 3] } : r);
-      });
+        updatedRow = { ...targetRow, cells: newCells, colWidths: [1 / 3, 1 / 3, 1 / 3] };
+      }
+
+      if (updatedRow) {
+        updateRowInItems(rowId, () => updatedRow!);
+      }
       setSelectedId(newField.id);
     }
   };
 
   const deleteField = useCallback((id: string) => {
-    setRows((prev) => removeField(prev, id));
+    setCanvasItems((prev) => prev.map((item) => {
+      if (item.kind === "row") {
+        const newRows = removeField([item.row], id);
+        return newRows.length > 0 ? { ...item, row: newRows[0] } : null;
+      }
+      if (item.kind === "fieldset") {
+        return { ...item, fieldset: { ...item.fieldset, rows: removeField(item.fieldset.rows, id) } };
+      }
+      return item;
+    }).filter((item): item is CanvasItem => {
+      if (item === null) return false;
+      return true;
+    }));
     setSelectedId((prev) => (prev === id ? null : prev));
   }, []);
 
+  const deleteFieldset = useCallback((id: string) => {
+    setCanvasItems((prev) => prev.filter((item) => !(item.kind === "fieldset" && item.fieldset.id === id)));
+  }, []);
+
+  const renameFieldset = useCallback((id: string, title: string) => {
+    setCanvasItems((prev) => prev.map((item) => item.kind === "fieldset" && item.fieldset.id === id ? { ...item, fieldset: { ...item.fieldset, title } } : item));
+  }, []);
+
   const updateFieldProps = useCallback((props: FieldProps) => {
-    setRows((prev) => prev.map((row) => ({ ...row, cells: row.cells.map((cell) => cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell) })));
+    setCanvasItems((prev) => prev.map((item) => {
+      if (item.kind === "row") return { ...item, row: { ...item.row, cells: item.row.cells.map((cell) => cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell) } };
+      if (item.kind === "fieldset") return { ...item, fieldset: { ...item.fieldset, rows: item.fieldset.rows.map((row) => ({ ...row, cells: row.cells.map((cell) => cell.field.id === selectedId ? { ...cell, field: { ...cell.field, props } } : cell) })) } };
+      return item;
+    }));
   }, [selectedId]);
 
   const handleResizeRow = useCallback((rowId: string, newWidths: number[]) => {
-    setRows((prev) => prev.map((r) => r.id === rowId ? { ...r, colWidths: newWidths } : r));
-  }, []);
+    updateRowInItems(rowId, (row) => ({ ...row, colWidths: newWidths }));
+  }, [canvasItems]);
 
   const draggingField = activeItem?.kind === "row"
-    ? rows.flatMap((r) => r.cells).find((c) => c.field.id === (activeItem as { kind: "row"; rowId: string }).rowId)?.field
+    ? allRows.flatMap((r) => r.cells).find((c) => c.field.id === (activeItem as { kind: "row"; rowId: string }).rowId)?.field
     : null;
 
   if (!isOpen) return null;
@@ -909,7 +1150,7 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
           </div>
             
           {/* Phải: export buttons */}
-          {!isMinimized && <HeaderButtons rows={rows} onExport={onExport} />}
+          {!isMinimized && <HeaderButtons rows={allRows} onExport={onExport} />}
         </div>
 
         {/* Body */}
@@ -917,13 +1158,18 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
             <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
               <ComponentSidebar search={search} onSearchChange={setSearch} />
-              <FormCanvas rows={rows} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} onResizeRow={handleResizeRow} onDeselect={() => setSelectedId(null)} />
+              <FormCanvas canvasItems={canvasItems} selectedId={selectedId} dropTarget={dropTarget} isDraggingFromSidebar={isDraggingFromSidebar} onSelectField={setSelectedId} onDeleteField={deleteField} onResizeRow={handleResizeRow} onDeleteFieldset={deleteFieldset} onRenameFieldset={renameFieldset} onDeselect={() => setSelectedId(null)} />
               <div style={{ width: 200, background: "#ffffff", borderLeft: "1px solid #e2e8f0", overflowY: "auto", flexShrink: 0 }}>
                 <PropertiesPanel field={selectedField} onChange={updateFieldProps} />
               </div>
             </div>
             <DragOverlay dropAnimation={{ duration: 160, easing: "ease" }}>
-              {isDraggingFromSidebar && (
+              {activeItem?.kind === "sidebar-fieldset" && (
+                <div style={{ background: "#ede9fe", border: "1.5px solid #7c3aed", borderRadius: 6, padding: "7px 12px", color: "#7c3aed", fontSize: 13, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
+                  📋 Fieldset Card
+                </div>
+              )}
+              {isDraggingFromSidebar && activeItem?.kind === "sidebar" && (
                 <div style={{ background: "#eff6ff", border: "1.5px solid #3b82f6", borderRadius: 6, padding: "7px 12px", color: "#2563eb", fontSize: 13, boxShadow: "0 8px 24px rgba(0,0,0,0.4)", pointerEvents: "none" }}>
                   {(activeItem as { kind: "sidebar"; label: string }).label}
                 </div>
