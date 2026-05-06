@@ -677,7 +677,6 @@ function FieldsetCardBlock({ fieldset, selectedId, dropTarget, isDraggingFromSid
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!editing) setTitleVal(fieldset.title);
   }, [fieldset.title, editing]);
 
@@ -970,6 +969,9 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
       return;
     }
     if (data?.kind === "field") {
+      // Over a fieldset drop zone?
+      const fieldsetMatch = overId.match(/^fieldset:([^:]+):/);
+      if (fieldsetMatch) { setDropTarget(null); return; }
       const overFieldId = (overId as string).replace("field:", "");
       const dstInfo = findFieldInRows(allRows, overFieldId);
       if (dstInfo) setDropTarget({ rowId: dstInfo.rowId, slot: dstInfo.slot });
@@ -993,8 +995,44 @@ export function FormBuilderModal({ isOpen, onClose, onExport }: FormBuilderModal
     if (data?.kind === "field") {
       const activeFieldSortId = active.id as string;
       const overSortId = over.id as string;
-      if (activeFieldSortId === overSortId) return;
       const activeFieldId = activeFieldSortId.replace("field:", "");
+
+      // Case: field dropped onto a fieldset drop zone (e.g. empty fieldset or bottom zone)
+      const fieldsetMatch = overSortId.match(/^fieldset:([^:]+):/);
+      if (fieldsetMatch) {
+        const fieldsetId = fieldsetMatch[1];
+        const srcInfo = findFieldInRows(allRows, activeFieldId);
+        if (!srcInfo) return;
+        const srcRow = allRows.find(r => r.id === srcInfo.rowId);
+        if (!srcRow) return;
+        const srcCell = srcRow.cells.find(c => c.field.id === activeFieldId);
+        if (!srcCell) return;
+        // Remove field from its current location
+        const newRow: Row = { id: newRowId(), cells: [{ field: srcCell.field, slot: "full" }], colWidths: [1] };
+        setCanvasItems((prev) => {
+          // Remove from source
+          const withRemoved = prev.map((item): CanvasItem | null => {
+            if (item.kind === "row") {
+              const filtered = removeField([item.row], activeFieldId);
+              return filtered.length > 0 ? { kind: "row", row: filtered[0] } : null;
+            }
+            if (item.kind === "fieldset") {
+              return { ...item, fieldset: { ...item.fieldset, rows: removeField(item.fieldset.rows, activeFieldId) } };
+            }
+            return item;
+          }).filter((item): item is CanvasItem => item !== null);
+          // Add to target fieldset
+          return withRemoved.map((item) => {
+            if (item.kind === "fieldset" && item.fieldset.id === fieldsetId) {
+              return { ...item, fieldset: { ...item.fieldset, rows: [...item.fieldset.rows, newRow] } };
+            }
+            return item;
+          });
+        });
+        return;
+      }
+
+      if (activeFieldSortId === overSortId) return;
       const overFieldId = overSortId.replace("field:", "");
       const srcInfo = findFieldInRows(allRows, activeFieldId);
       const dstInfo = findFieldInRows(allRows, overFieldId);
